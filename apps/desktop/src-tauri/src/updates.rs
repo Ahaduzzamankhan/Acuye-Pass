@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use acuye_updater::{self, ReleaseChannel, ReleaseSource, UpdateCandidate, VerifiedUpdate};
+use acuye_updater::{self, ReleaseChannel, UpdateCandidate, VerifiedUpdate};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -246,7 +246,12 @@ pub fn download_update(app: AppHandle, state: State<'_, AppState>) -> ApiResult<
 
 #[tauri::command]
 pub fn verify_update(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> {
-    let (channel, last_check, candidate, path) = {
+    let (channel, last_check, candidate, path): (
+        String,
+        Option<i64>,
+        Option<UpdateCandidate>,
+        Option<PathBuf>,
+    ) = {
         let core = lock_core(&state)?;
         let runtime = state.update.lock().map_err(|_| ApiError::internal())?;
         (
@@ -256,14 +261,10 @@ pub fn verify_update(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> 
             runtime.download_path.clone(),
         )
     };
-    let Some(candidate) = candidate else {
-        return Err(ApiError::validation("No update is available to verify"));
-    };
-    let Some(path) = path else {
-        return Err(ApiError::validation(
-            "Download the update before verifying it",
-        ));
-    };
+    let candidate =
+        candidate.ok_or_else(|| ApiError::validation("No update is available to verify"))?;
+    let path: PathBuf =
+        path.ok_or_else(|| ApiError::validation("Download the update before verifying it"))?;
     let Some(public_key) = signing_key() else {
         return Err(ApiError::validation(
             "This build has no updater signing key configured",

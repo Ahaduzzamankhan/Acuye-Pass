@@ -99,7 +99,6 @@ pub fn run() {
             window::window_toggle_maximize,
             window::window_is_maximized,
             window::window_close,
-            window::window_start_resize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Acuye Pass");

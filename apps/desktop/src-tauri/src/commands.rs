@@ -15,7 +15,9 @@ use crate::state::{
     SessionView,
 };
 
-pub fn lock_core(state: &State<'_, AppState>) -> ApiResult<std::sync::MutexGuard<'_, Core>> {
+pub fn lock_core<'a, 'r>(
+    state: &'a State<'r, AppState>,
+) -> ApiResult<std::sync::MutexGuard<'a, Core>> {
     state.core.lock().map_err(|_| ApiError::internal())
 }
 
