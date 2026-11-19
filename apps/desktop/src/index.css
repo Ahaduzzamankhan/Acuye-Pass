@@ -1,0 +1,256 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 12px;
+
+    --background: 220 24% 97%;
+    --foreground: 222 24% 12%;
+    --surface: 0 0% 100%;
+    --surface-foreground: 222 24% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 24% 14%;
+    --muted: 220 18% 93%;
+    --muted-foreground: 220 10% 40%;
+    --border: 220 16% 89%;
+    --input: 220 16% 84%;
+    --ring: 221 83% 53%;
+    --accent: 221 83% 53%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 221 90% 96%;
+    --danger: 0 72% 48%;
+    --danger-foreground: 0 0% 100%;
+    --success: 152 62% 34%;
+    --warning: 32 92% 40%;
+
+    --sidebar: 222 30% 13%;
+    --sidebar-foreground: 220 20% 94%;
+    --sidebar-muted: 220 12% 64%;
+    --sidebar-active: 221 60% 22%;
+
+    --titlebar: 222 30% 11%;
+    --titlebar-foreground: 220 20% 92%;
+  }
+
+  .dark {
+    --background: 222 26% 8%;
+    --foreground: 220 20% 94%;
+    --surface: 222 24% 11%;
+    --surface-foreground: 220 20% 94%;
+    --card: 222 24% 11%;
+    --card-foreground: 220 20% 94%;
+    --muted: 222 18% 16%;
+    --muted-foreground: 220 12% 64%;
+    --border: 222 16% 19%;
+    --input: 222 16% 24%;
+    --ring: 221 90% 62%;
+    --accent: 221 90% 62%;
+    --accent-foreground: 222 47% 11%;
+    --accent-soft: 221 50% 20%;
+    --danger: 0 78% 60%;
+    --danger-foreground: 0 0% 100%;
+    --success: 152 55% 48%;
+    --warning: 38 92% 55%;
+
+    --sidebar: 222 28% 9%;
+    --sidebar-foreground: 220 20% 92%;
+    --sidebar-muted: 220 12% 60%;
+    --sidebar-active: 221 50% 18%;
+
+    --titlebar: 222 30% 7%;
+    --titlebar-foreground: 220 20% 90%;
+  }
+
+  [data-theme="white"] {
+    --accent: 220 12% 26%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 220 16% 95%;
+    --ring: 220 12% 32%;
+    --sidebar: 220 20% 96%;
+    --sidebar-foreground: 222 24% 16%;
+    --sidebar-muted: 220 10% 44%;
+    --sidebar-active: 220 16% 88%;
+    --titlebar: 220 20% 94%;
+    --titlebar-foreground: 222 24% 14%;
+  }
+
+  [data-theme="white"].dark {
+    --accent: 220 14% 84%;
+    --accent-foreground: 222 30% 10%;
+    --accent-soft: 220 12% 22%;
+    --ring: 220 14% 74%;
+    --sidebar: 220 14% 13%;
+    --sidebar-foreground: 220 20% 92%;
+    --sidebar-muted: 220 10% 62%;
+    --sidebar-active: 220 12% 22%;
+    --titlebar: 220 14% 11%;
+    --titlebar-foreground: 220 20% 90%;
+  }
+
+  [data-theme="red"] {
+    --accent: 355 74% 47%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 355 90% 96%;
+    --ring: 355 74% 50%;
+    --sidebar-active: 355 55% 24%;
+  }
+  [data-theme="red"].dark {
+    --accent: 355 84% 62%;
+    --accent-foreground: 355 80% 10%;
+    --accent-soft: 355 45% 20%;
+    --sidebar-active: 355 40% 20%;
+  }
+
+  [data-theme="green"] {
+    --accent: 158 74% 31%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 158 70% 95%;
+    --ring: 158 74% 36%;
+    --sidebar-active: 158 50% 20%;
+  }
+  [data-theme="green"].dark {
+    --accent: 158 62% 48%;
+    --accent-foreground: 158 80% 8%;
+    --accent-soft: 158 45% 16%;
+    --sidebar-active: 158 40% 16%;
+  }
+
+  /* Yellow uses a darker accent in light mode so white text keeps AA contrast. */
+  [data-theme="yellow"] {
+    --accent: 36 92% 34%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 42 96% 94%;
+    --ring: 36 92% 40%;
+    --sidebar-active: 40 70% 20%;
+  }
+  [data-theme="yellow"].dark {
+    --accent: 43 96% 56%;
+    --accent-foreground: 36 80% 10%;
+    --accent-soft: 43 60% 20%;
+    --sidebar-active: 40 50% 18%;
+  }
+
+  [data-theme="monochrome"] {
+    --accent: 220 8% 32%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 220 10% 94%;
+    --ring: 220 8% 40%;
+    --sidebar-active: 220 6% 24%;
+  }
+  [data-theme="monochrome"].dark {
+    --accent: 220 8% 80%;
+    --accent-foreground: 220 10% 8%;
+    --accent-soft: 220 8% 22%;
+    --sidebar-active: 220 8% 20%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    overflow: hidden;
+    font-feature-settings: "cv11", "ss01";
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: hsl(var(--accent) / 0.24);
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.85);
+    outline-offset: 2px;
+  }
+
+  input,
+  textarea,
+  select {
+    @apply text-foreground;
+  }
+
+  /* Thin, themed scrollbars for a native feel. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.28);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .drag-region {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+  .no-drag {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+  .titlebar {
+    background: hsl(var(--titlebar));
+    color: hsl(var(--titlebar-foreground));
+  }
+  .surface {
+    background: hsl(var(--surface));
+  }
+  .hairline {
+    box-shadow: inset 0 0 0 1px hsl(var(--border) / 0.9);
+  }
+  .glass-panel {
+    background: hsl(var(--surface) / 0.92);
+    backdrop-filter: blur(14px);
+  }
+  .mono-secret {
+    font-family: theme("fontFamily.mono");
+    letter-spacing: 0.02em;
+  }
+  html[data-density="compact"] .item-row {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+}
+
+/* Respect the OS reduced-motion preference even before React reads settings. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-reduce-motion="true"] *,
+html[data-reduce-motion="true"] *::before,
+html[data-reduce-motion="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

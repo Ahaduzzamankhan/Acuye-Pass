@@ -1,0 +1,38 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile desktop app (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Compile Tauri shell
+        run: cargo check -p acuye-pass --all-targets
+      - name: Verify bundle configuration
+        run: node -e "const c=require('./apps/desktop/src-tauri/tauri.conf.json'); if(c.bundle.targets.join()!=='nsis,msi') throw new Error('unexpected bundle targets'); if(c.app.security.capabilities.join()!=='default') throw new Error('unexpected capabilities');"

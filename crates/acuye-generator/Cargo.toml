@@ -1,0 +1,12 @@
+[package]
+name = "acuye-generator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+acuye-core = { workspace = true }
+acuye-crypto = { workspace = true }
+serde = { workspace = true }
+zeroize = { workspace = true }

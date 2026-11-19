@@ -1,0 +1,20 @@
+[package]
+name = "acuye-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+acuye-core = { workspace = true }
+argon2 = "0.5"
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+rand = { workspace = true }
+zeroize = { workspace = true }
+subtle = "2"
+base64 = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

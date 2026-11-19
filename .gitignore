@@ -1,0 +1,45 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# frontend build output
+dist/
+apps/desktop/dist/
+apps/mobile/dist/
+
+# rust
+target/
+**/*.rs.bk
+
+# tauri generated
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+
+# environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+updater-private-key
+tauri-signing-key*
+
+# local data
+*.db
+*.db-shm
+*.db-wal
+/apps/desktop/src-tauri/icons/*.png.bak
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+coverage/
+*.log
+
+# typescript incremental build info
+*.tsbuildinfo

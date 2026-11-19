@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Validate and apply release version
+        shell: bash
+        run: node scripts/set-version.mjs "${GITHUB_REF_NAME}"
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: cargo test --workspace
+
+      - name: Build installers and updater signatures
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          ACUYE_UPDATER_PUBKEY: ${{ secrets.ACUYE_UPDATER_PUBKEY }}
+        run: pnpm desktop:build
+
+      - name: Verify updater artifacts
+        shell: bash
+        run: |
+          shopt -s globstar nullglob
+          installers=(target/release/bundle/nsis/*.exe target/release/bundle/msi/*.msi)
+          if [ ${#installers[@]} -eq 0 ]; then
+            echo "no installers were produced" >&2
+            exit 1
+          fi
+          for installer in "${installers[@]}"; do
+            if [ ! -f "${installer}.sig" ]; then
+              echo "missing signature for ${installer}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe.sig
+            target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.msi.sig

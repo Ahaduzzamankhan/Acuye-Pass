@@ -1,0 +1,817 @@
+//! Encrypted local persistence for Acuye Pass.
+//!
+//! SQLite is used as an *encrypted blob store*: account secrets are wrapped
+//! keys/verifiers and every vault item is ciphertext produced by
+//! `acuye-vault`. Nothing in this database is plaintext vault content, so a
+//! stolen database file (or a missing WAL sidecar) does not reveal items.
+//!
+//! Migrations are append-only and tracked with `PRAGMA user_version`. They
+//! never drop or truncate existing tables.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use acuye_core::{AccountRecord, AcuyeError, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+
+const SCHEMA_VERSION: i32 = 2;
+
+fn storage_err(_err: rusqlite::Error) -> AcuyeError {
+    // Do not forward driver messages: they may include SQL fragments.
+    AcuyeError::Storage("the local database operation failed".into())
+}
+
+/// Append-only migrations. Index + 1 == resulting user_version.
+const MIGRATIONS: &[&str] = &[
+    // v1: initial schema
+    r#"
+    CREATE TABLE IF NOT EXISTS accounts (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        username TEXT NOT NULL UNIQUE,
+        kdf_algorithm TEXT NOT NULL,
+        kdf_memory_kib INTEGER NOT NULL,
+        kdf_iterations INTEGER NOT NULL,
+        kdf_parallelism INTEGER NOT NULL,
+        salt BLOB NOT NULL,
+        verifier BLOB NOT NULL,
+        wrapped_vault_key BLOB NOT NULL,
+        vault_key_nonce BLOB NOT NULL,
+        vault_id TEXT NOT NULL,
+        vault_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS items (
+        id TEXT PRIMARY KEY NOT NULL,
+        vault_id TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        ciphertext BLOB NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_items_vault ON items(vault_id);
+
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0,
+        sync_registered INTEGER NOT NULL DEFAULT 0
+    );
+    "#,
+    // v2: sync bookkeeping for the future BYOB engine (no network behaviour).
+    r#"
+    CREATE TABLE IF NOT EXISTS sync_state (
+        vault_id TEXT PRIMARY KEY NOT NULL,
+        local_revision INTEGER NOT NULL DEFAULT 0,
+        remote_revision INTEGER NOT NULL DEFAULT 0,
+        last_synced_at INTEGER,
+        provider_endpoint TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+        revision INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        queued_at INTEGER NOT NULL
+    );
+    "#,
+];
+
+/// One encrypted item row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredItem {
+    pub id: String,
+    pub vault_id: String,
+    pub nonce: Vec<u8>,
+    pub ciphertext: Vec<u8>,
+    pub updated_at: i64,
+}
+
+/// A known device (local or previously synced).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeviceRecord {
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    pub revoked: bool,
+    pub sync_registered: bool,
+}
+
+/// Handle to the local encrypted database.
+pub struct Database {
+    conn: Connection,
+    path: Option<PathBuf>,
+}
+
+impl Database {
+    /// Open (or create) the database at `path`, applying migrations.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(&path).map_err(storage_err)?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(storage_err)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = FULL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA secure_delete = ON;
+             PRAGMA trusted_schema = OFF;",
+        )
+        .map_err(storage_err)?;
+        let mut db = Self {
+            conn,
+            path: Some(path),
+        };
+        db.migrate()?;
+        Ok(db)
+    }
+
+    /// In-memory database, for tests only.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().map_err(storage_err)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA trusted_schema = OFF;",
+        )
+        .map_err(storage_err)?;
+        let mut db = Self { conn, path: None };
+        db.migrate()?;
+        Ok(db)
+    }
+
+    fn migrate(&mut self) -> Result<()> {
+        let current: i32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(storage_err)?;
+        if current > SCHEMA_VERSION {
+            // The file was written by a newer build. Refuse to run instead of
+            // risking data loss.
+            return Err(AcuyeError::Unsupported(
+                "this vault was created by a newer version of Acuye Pass".into(),
+            ));
+        }
+        for (index, sql) in MIGRATIONS.iter().enumerate() {
+            let version = index as i32 + 1;
+            if current >= version {
+                continue;
+            }
+            let tx = self.conn.transaction().map_err(storage_err)?;
+            tx.execute_batch(sql).map_err(storage_err)?;
+            tx.pragma_update(None, "user_version", version)
+                .map_err(storage_err)?;
+            tx.commit().map_err(storage_err)?;
+        }
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> Result<i32> {
+        self.conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(storage_err)
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    // ----- account ---------------------------------------------------------
+
+    pub fn load_account(&self) -> Result<Option<AccountRecord>> {
+        self.conn
+            .query_row(
+                "SELECT username, kdf_algorithm, kdf_memory_kib, kdf_iterations,
+                        kdf_parallelism, salt, verifier, wrapped_vault_key,
+                        vault_key_nonce, vault_id, vault_name, created_at, updated_at
+                 FROM accounts WHERE id = 1",
+                [],
+                |row| {
+                    Ok(AccountRecord {
+                        username: row.get(0)?,
+                        kdf_algorithm: row.get(1)?,
+                        kdf_memory_kib: row.get(2)?,
+                        kdf_iterations: row.get(3)?,
+                        kdf_parallelism: row.get(4)?,
+                        salt: row.get(5)?,
+                        verifier: row.get(6)?,
+                        wrapped_vault_key: row.get(7)?,
+                        vault_key_nonce: row.get(8)?,
+                        vault_id: row.get(9)?,
+                        vault_name: row.get(10)?,
+                        created_at: row.get(11)?,
+                        updated_at: row.get(12)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage_err)
+    }
+
+    /// Create the single local account. Fails if one already exists — Acuye
+    /// Pass never silently overwrites an existing vault.
+    pub fn insert_account(&self, account: &AccountRecord) -> Result<()> {
+        if self.load_account()?.is_some() {
+            return Err(AcuyeError::Conflict(
+                "an account already exists on this device".into(),
+            ));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
+                    kdf_iterations, kdf_parallelism, salt, verifier,
+                    wrapped_vault_key, vault_key_nonce, vault_id, vault_name,
+                    created_at, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    account.username,
+                    account.kdf_algorithm,
+                    account.kdf_memory_kib,
+                    account.kdf_iterations,
+                    account.kdf_parallelism,
+                    account.salt,
+                    account.verifier,
+                    account.wrapped_vault_key,
+                    account.vault_key_nonce,
+                    account.vault_id,
+                    account.vault_name,
+                    account.created_at,
+                    account.updated_at,
+                ],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Replace account key material during password rotation.
+    pub fn update_account(&self, account: &AccountRecord) -> Result<()> {
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE accounts SET username = ?1, kdf_algorithm = ?2,
+                    kdf_memory_kib = ?3, kdf_iterations = ?4, kdf_parallelism = ?5,
+                    salt = ?6, verifier = ?7, wrapped_vault_key = ?8,
+                    vault_key_nonce = ?9, vault_id = ?10, vault_name = ?11,
+                    updated_at = ?12
+                 WHERE id = 1",
+                params![
+                    account.username,
+                    account.kdf_algorithm,
+                    account.kdf_memory_kib,
+                    account.kdf_iterations,
+                    account.kdf_parallelism,
+                    account.salt,
+                    account.verifier,
+                    account.wrapped_vault_key,
+                    account.vault_key_nonce,
+                    account.vault_id,
+                    account.vault_name,
+                    account.updated_at,
+                ],
+            )
+            .map_err(storage_err)?;
+        if updated != 1 {
+            return Err(AcuyeError::NotFound("account".into()));
+        }
+        Ok(())
+    }
+
+    // ----- items -----------------------------------------------------------
+
+    pub fn load_items(&self, vault_id: &str) -> Result<Vec<StoredItem>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, vault_id, nonce, ciphertext, updated_at
+                 FROM items WHERE vault_id = ?1 ORDER BY updated_at ASC",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map(params![vault_id], |row| {
+                Ok(StoredItem {
+                    id: row.get(0)?,
+                    vault_id: row.get(1)?,
+                    nonce: row.get(2)?,
+                    ciphertext: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    pub fn upsert_item(&self, item: &StoredItem) -> Result<()> {
+        if item.nonce.len() < 24 || item.ciphertext.is_empty() {
+            return Err(AcuyeError::Validation("invalid encrypted item".into()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO items (id, vault_id, nonce, ciphertext, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    vault_id = excluded.vault_id,
+                    nonce = excluded.nonce,
+                    ciphertext = excluded.ciphertext,
+                    updated_at = excluded.updated_at",
+                params![
+                    item.id,
+                    item.vault_id,
+                    item.nonce,
+                    item.ciphertext,
+                    item.updated_at
+                ],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Atomically replace the whole encrypted item set together with the
+    /// account key material. Used for master-password/key rotation so a crash
+    /// can never leave half the vault under the old key.
+    pub fn replace_vault_items(
+        &mut self,
+        account: &AccountRecord,
+        items: &[StoredItem],
+    ) -> Result<()> {
+        let tx = self.conn.transaction().map_err(storage_err)?;
+        tx.execute("DELETE FROM items", []).map_err(storage_err)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO items (id, vault_id, nonce, ciphertext, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(storage_err)?;
+            for item in items {
+                stmt.execute(params![
+                    item.id,
+                    item.vault_id,
+                    item.nonce,
+                    item.ciphertext,
+                    item.updated_at
+                ])
+                .map_err(storage_err)?;
+            }
+        }
+        tx.execute(
+            "UPDATE accounts SET kdf_algorithm = ?1, kdf_memory_kib = ?2,
+                kdf_iterations = ?3, kdf_parallelism = ?4, salt = ?5,
+                verifier = ?6, wrapped_vault_key = ?7, vault_key_nonce = ?8,
+                updated_at = ?9 WHERE id = 1",
+            params![
+                account.kdf_algorithm,
+                account.kdf_memory_kib,
+                account.kdf_iterations,
+                account.kdf_parallelism,
+                account.salt,
+                account.verifier,
+                account.wrapped_vault_key,
+                account.vault_key_nonce,
+                account.updated_at,
+            ],
+        )
+        .map_err(storage_err)?;
+        tx.commit().map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn delete_item(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM items WHERE id = ?1", params![id])
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn item_count(&self) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .map_err(storage_err)?;
+        Ok(count as usize)
+    }
+
+    // ----- settings --------------------------------------------------------
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn settings_map(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM settings ORDER BY key")
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    // ----- devices ---------------------------------------------------------
+
+    pub fn upsert_device(&self, device: &DeviceRecord) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO devices (id, name, platform, created_at, last_seen_at, revoked, sync_registered)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    platform = excluded.platform,
+                    last_seen_at = excluded.last_seen_at,
+                    revoked = excluded.revoked,
+                    sync_registered = excluded.sync_registered",
+                params![
+                    device.id,
+                    device.name,
+                    device.platform,
+                    device.created_at,
+                    device.last_seen_at,
+                    device.revoked as i32,
+                    device.sync_registered as i32,
+                ],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    pub fn list_devices(&self) -> Result<Vec<DeviceRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, platform, created_at, last_seen_at, revoked, sync_registered
+                 FROM devices ORDER BY created_at ASC",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(DeviceRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    platform: row.get(2)?,
+                    created_at: row.get(3)?,
+                    last_seen_at: row.get(4)?,
+                    revoked: row.get::<_, i32>(5)? != 0,
+                    sync_registered: row.get::<_, i32>(6)? != 0,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    pub fn revoke_device(&self, id: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute("UPDATE devices SET revoked = 1 WHERE id = ?1", params![id])
+            .map_err(storage_err)?;
+        if changed == 0 {
+            return Err(AcuyeError::NotFound("device".into()));
+        }
+        Ok(())
+    }
+
+    /// Replace the current contents with a pre-verified encrypted backup.
+    ///
+    /// The backup is opened read-only and validated before a single transaction
+    /// swaps account, item and settings rows. Vault contents remain ciphertext
+    /// throughout, so this never needs the master password.
+    pub fn replace_with_backup(&mut self, backup: &Path) -> Result<()> {
+        if !backup.exists() {
+            return Err(AcuyeError::NotFound("backup".into()));
+        }
+        let source =
+            Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(storage_err)?;
+        let version: i32 = source
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(storage_err)?;
+        if version == 0 || version > SCHEMA_VERSION {
+            return Err(AcuyeError::Unsupported(
+                "that backup was created by an unsupported version".into(),
+            ));
+        }
+        let check: String = source
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(storage_err)?;
+        if check != "ok" {
+            return Err(AcuyeError::Storage("backup verification failed".into()));
+        }
+
+        let source_db = Database {
+            conn: source,
+            path: None,
+        };
+        let account = source_db
+            .load_account()?
+            .ok_or_else(|| AcuyeError::Storage("backup has no account".into()))?;
+        let items = source_db.load_items(&account.vault_id)?;
+        let settings = source_db.settings_map()?;
+
+        let tx = self.conn.transaction().map_err(storage_err)?;
+        tx.execute("DELETE FROM items", []).map_err(storage_err)?;
+        tx.execute("DELETE FROM accounts", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM settings", [])
+            .map_err(storage_err)?;
+        tx.execute(
+            "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
+                kdf_iterations, kdf_parallelism, salt, verifier, wrapped_vault_key,
+                vault_key_nonce, vault_id, vault_name, created_at, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                account.username,
+                account.kdf_algorithm,
+                account.kdf_memory_kib,
+                account.kdf_iterations,
+                account.kdf_parallelism,
+                account.salt,
+                account.verifier,
+                account.wrapped_vault_key,
+                account.vault_key_nonce,
+                account.vault_id,
+                account.vault_name,
+                account.created_at,
+                account.updated_at,
+            ],
+        )
+        .map_err(storage_err)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO items (id, vault_id, nonce, ciphertext, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(storage_err)?;
+            for item in &items {
+                stmt.execute(params![
+                    item.id,
+                    item.vault_id,
+                    item.nonce,
+                    item.ciphertext,
+                    item.updated_at
+                ])
+                .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare("INSERT INTO settings (key, value) VALUES (?1, ?2)")
+                .map_err(storage_err)?;
+            for (key, value) in &settings {
+                stmt.execute(params![key, value]).map_err(storage_err)?;
+            }
+        }
+        tx.commit().map_err(storage_err)?;
+        Ok(())
+    }
+
+    // ----- diagnostics & backups -------------------------------------------
+
+    pub fn integrity_ok(&self) -> bool {
+        self.conn
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .map(|s| s == "ok")
+            .unwrap_or(false)
+    }
+
+    pub fn db_size_bytes(&self) -> u64 {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Create a consistent copy of the encrypted database (SQLite `VACUUM
+    /// INTO`), then verify the copy before reporting success.
+    pub fn backup_to(&self, destination: &Path) -> Result<()> {
+        if destination.exists() {
+            return Err(AcuyeError::Conflict("backup file already exists".into()));
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Fold the WAL into the main database first so the copy is complete.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(storage_err)?;
+        let path_str = destination
+            .to_str()
+            .ok_or_else(|| AcuyeError::Validation("invalid backup path".into()))?;
+        self.conn
+            .execute("VACUUM INTO ?1", params![path_str])
+            .map_err(storage_err)?;
+
+        let check = Connection::open(destination).map_err(storage_err)?;
+        let ok: String = check
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(storage_err)?;
+        if ok != "ok" {
+            return Err(AcuyeError::Storage("backup verification failed".into()));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acuye_core::time::now;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "acuye-storage-test-{}-{}-{}",
+            std::process::id(),
+            now(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn account() -> AccountRecord {
+        AccountRecord {
+            username: "ada".into(),
+            kdf_algorithm: "argon2id".into(),
+            kdf_memory_kib: 65_536,
+            kdf_iterations: 3,
+            kdf_parallelism: 1,
+            salt: vec![1u8; 16],
+            verifier: vec![2u8; 32],
+            wrapped_vault_key: vec![3u8; 40],
+            vault_key_nonce: vec![4u8; 24],
+            vault_id: "vault-1".into(),
+            vault_name: "Personal".into(),
+            created_at: 100,
+            updated_at: 100,
+        }
+    }
+
+    fn stored(id: &str) -> StoredItem {
+        StoredItem {
+            id: id.into(),
+            vault_id: "vault-1".into(),
+            nonce: vec![9u8; 24],
+            ciphertext: vec![7u8; 48],
+            updated_at: 500,
+        }
+    }
+
+    #[test]
+    fn migrations_create_schema_and_report_version() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(db.load_account().unwrap().is_none());
+        assert!(db.integrity_ok());
+        assert_eq!(db.item_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn migration_is_idempotent_when_reopening() {
+        let dir = temp_dir();
+        let path = dir.join("acuye.db");
+        {
+            let db = Database::open(&path).unwrap();
+            db.insert_account(&account()).unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(db.load_account().unwrap().unwrap().username, "ada");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn account_cannot_be_silently_overwritten() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_account(&account()).unwrap();
+        assert!(matches!(
+            db.insert_account(&account()),
+            Err(AcuyeError::Conflict(_))
+        ));
+        let mut updated = account();
+        updated.updated_at = 200;
+        db.update_account(&updated).unwrap();
+        assert_eq!(db.load_account().unwrap().unwrap().updated_at, 200);
+    }
+
+    #[test]
+    fn items_persist_encrypted_blobs_and_delete() {
+        let dir = temp_dir();
+        let path = dir.join("acuye.db");
+        {
+            let db = Database::open(&path).unwrap();
+            db.upsert_item(&stored("a")).unwrap();
+            db.upsert_item(&stored("b")).unwrap();
+            assert_eq!(db.item_count().unwrap(), 2);
+            db.delete_item("a").unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        let items = db.load_items("vault-1").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "b");
+        assert!(db.load_items("other-vault").unwrap().is_empty());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn invalid_ciphertext_rows_are_rejected() {
+        let db = Database::open_in_memory().unwrap();
+        let mut bad = stored("a");
+        bad.nonce = vec![0u8; 4];
+        assert!(db.upsert_item(&bad).is_err());
+        let mut bad = stored("b");
+        bad.ciphertext.clear();
+        assert!(db.upsert_item(&bad).is_err());
+    }
+
+    #[test]
+    fn settings_roundtrip_and_upsert() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.get_setting("theme").unwrap().is_none());
+        db.set_setting("theme", "blue").unwrap();
+        db.set_setting("theme", "red").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap().unwrap(), "red");
+        assert_eq!(db.settings_map().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn devices_can_be_revoked() {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_device(&DeviceRecord {
+            id: "dev-1".into(),
+            name: "Laptop".into(),
+            platform: "windows".into(),
+            created_at: 1,
+            last_seen_at: 2,
+            revoked: false,
+            sync_registered: false,
+        })
+        .unwrap();
+        assert_eq!(db.list_devices().unwrap().len(), 1);
+        db.revoke_device("dev-1").unwrap();
+        assert!(db.list_devices().unwrap()[0].revoked);
+        assert!(db.revoke_device("missing").is_err());
+    }
+
+    #[test]
+    fn backup_creates_verified_copy() {
+        let dir = temp_dir();
+        let db = Database::open(dir.join("acuye.db")).unwrap();
+        db.insert_account(&account()).unwrap();
+        db.upsert_item(&stored("a")).unwrap();
+        let backup = dir.join("backups").join("vault-backup.db");
+        db.backup_to(&backup).unwrap();
+        assert!(backup.exists());
+        let restored = Database::open(&backup).unwrap();
+        assert_eq!(restored.load_account().unwrap().unwrap().username, "ada");
+        assert_eq!(restored.item_count().unwrap(), 1);
+        assert!(db.backup_to(&backup).is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+}

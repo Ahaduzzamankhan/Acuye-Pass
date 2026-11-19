@@ -1,0 +1,4 @@
+packages:
+  - "apps/*"
+  # The mobile scaffold has its own native toolchain and is not installed here.
+  - "!apps/mobile"

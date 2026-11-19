@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/acuye-core",
+  "crates/acuye-crypto",
+  "crates/acuye-vault",
+  "crates/acuye-storage",
+  "crates/acuye-auth",
+  "crates/acuye-generator",
+  "crates/acuye-sync",
+  "crates/acuye-protocol",
+  "crates/acuye-import",
+  "crates/acuye-export",
+  "crates/acuye-updater",
+  "crates/acuye-platform",
+  "crates/acuye-ffi",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.84"
+license = "MIT"
+repository = "https://github.com/Ahaduzzamankhan/Acuye-Pass"
+authors = ["Fluxenite"]
+
+[workspace.dependencies]
+acuye-core = { path = "crates/acuye-core" }
+acuye-crypto = { path = "crates/acuye-crypto" }
+acuye-vault = { path = "crates/acuye-vault" }
+acuye-storage = { path = "crates/acuye-storage" }
+acuye-auth = { path = "crates/acuye-auth" }
+acuye-generator = { path = "crates/acuye-generator" }
+acuye-sync = { path = "crates/acuye-sync" }
+acuye-protocol = { path = "crates/acuye-protocol" }
+acuye-import = { path = "crates/acuye-import" }
+acuye-export = { path = "crates/acuye-export" }
+acuye-updater = { path = "crates/acuye-updater" }
+acuye-platform = { path = "crates/acuye-platform" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+semver = { version = "1", features = ["serde"] }
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
