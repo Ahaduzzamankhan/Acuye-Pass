@@ -43,3 +43,6 @@ coverage/
 
 # typescript incremental build info
 *.tsbuildinfo
+
+# Local signing key backup; never commit
+local-secrets/
