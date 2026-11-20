@@ -63,7 +63,7 @@ export function AppShell() {
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       {backend.kind === "preview" ? (
         <div className="flex items-center justify-center gap-2 border-b border-warning/25 bg-warning/10 px-4 py-1 text-[11px] font-medium text-warning">
-          Browser preview — demo data only, no encryption. Run the Windows desktop app for the real vault.
+          Preview · demo data only
         </div>
       ) : null}
       <div className="flex min-h-0 flex-1">
@@ -108,23 +108,27 @@ function StatusBar({
   encrypted: boolean;
 }) {
   return (
-    <div className="flex h-7 shrink-0 items-center gap-3 border-t border-border bg-surface/70 px-3 text-[10.5px] text-muted-foreground">
-      <span className="inline-flex items-center gap-1.5">
+    <div className="flex h-7 shrink-0 select-none items-center gap-2.5 border-t border-border bg-surface/70 px-3 text-[10.5px] text-muted-foreground">
+      <span
+        className="inline-flex items-center gap-1.5"
+        title={encrypted ? "Vault data is encrypted at rest" : "Browser preview uses demo data"}
+      >
         <ShieldCheck className={cn("h-3 w-3", encrypted ? "text-success" : "text-warning")} />
-        {encrypted ? "Vault encrypted at rest" : "Preview (unencrypted)"}
+        {encrypted ? "Encrypted" : "Preview"}
       </span>
-      <span className="text-border">|</span>
+      <span className="h-3 w-px bg-border" />
       <span className="truncate">
-        {vaultName} · {itemCount} items · {username}
+        {vaultName} · {itemCount} {itemCount === 1 ? "item" : "items"}
       </span>
-      <span className="ml-auto inline-flex items-center gap-1.5">
+      <span className="truncate text-muted-foreground/70">{username}</span>
+      <span className="ml-auto inline-flex items-center gap-1.5 whitespace-nowrap">
         <Lock className="h-3 w-3" />
         {autoLock === 0 ? "Auto-lock off" : `Locks after ${Math.round(autoLock / 60)} min`}
       </span>
       {shortcuts ? (
         <>
-          <span className="text-border">|</span>
-          <Tooltip content="Command palette">
+          <span className="h-3 w-px bg-border" />
+          <Tooltip content="Command palette (Ctrl K)">
             <span className="inline-flex items-center gap-1">
               <Search className="h-3 w-3" />
               <Kbd>Ctrl K</Kbd>

@@ -715,6 +715,12 @@ export class DemoBackend implements Backend {
   async authenticatorAdd(): Promise<Item> {
     throw new BackendError("unsupported", "The authenticator runs in the desktop app");
   }
+  async authenticatorAddEntry(): Promise<Item> {
+    throw new BackendError("unsupported", "The authenticator runs in the desktop app");
+  }
+  async authenticatorAdvanceCounter(): Promise<number> {
+    throw new BackendError("unsupported", "The authenticator runs in the desktop app");
+  }
   async authenticatorExport(): Promise<string> {
     throw new BackendError("unsupported", "The authenticator runs in the desktop app");
   }

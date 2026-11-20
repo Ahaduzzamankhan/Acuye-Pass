@@ -98,6 +98,8 @@ pub fn run() {
             // authenticator, secrets, breach monitoring
             advanced::authenticator_entries,
             advanced::authenticator_add,
+            advanced::authenticator_add_entry,
+            advanced::authenticator_advance_counter,
             advanced::authenticator_export,
             advanced::secret_copy,
             advanced::secret_reveal,

@@ -19,6 +19,7 @@ import type {
   LanPairResult,
   LanPeer,
   LanSyncResult,
+  NewAuthenticatorEntry,
   ParsedImport,
   PassphraseOptions,
   PasswordOptions,
@@ -98,6 +99,8 @@ export interface Backend {
   // authenticator, secrets, breach monitoring and LAN pairing
   authenticatorEntries(): Promise<TotpEntry[]>;
   authenticatorAdd(uri: string): Promise<Item>;
+  authenticatorAddEntry(entry: NewAuthenticatorEntry): Promise<Item>;
+  authenticatorAdvanceCounter(id: string): Promise<number>;
   authenticatorExport(id: string): Promise<string>;
   secretCopy(id: string, index: number): Promise<void>;
   secretReveal(id: string, index: number): Promise<string>;

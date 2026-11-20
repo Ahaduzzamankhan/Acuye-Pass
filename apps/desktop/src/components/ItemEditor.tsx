@@ -505,7 +505,7 @@ export function ItemEditor({
 
           <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Sparkles className="h-3 w-3" />
-            Items are encrypted individually; the vault key never leaves the Rust backend.
+            Items are encrypted individually.
           </p>
         </div>
       </Dialog>

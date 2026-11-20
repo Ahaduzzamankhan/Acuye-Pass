@@ -15,7 +15,7 @@ use acuye_lan::{
     TcpChannel, TrustStore, VaultIdentity,
 };
 use acuye_storage::LanPeerRow;
-use acuye_totp::{TotpAlgorithm, TotpConfig};
+use acuye_totp::{OtpConfig, OtpType, TotpAlgorithm, TotpConfig};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -42,6 +42,8 @@ fn totp_config(item: &Item) -> ApiResult<TotpConfig> {
             algorithm,
             digits,
             period,
+            otp_type,
+            counter,
         } => Ok(TotpConfig {
             secret: secret.clone(),
             issuer: issuer.clone(),
@@ -49,6 +51,8 @@ fn totp_config(item: &Item) -> ApiResult<TotpConfig> {
             algorithm: TotpAlgorithm::parse(algorithm)?,
             digits: *digits,
             period: *period,
+            otp_type: OtpType::parse(otp_type)?,
+            counter: *counter,
         }),
         _ => Err(ApiError::validation(
             "That item is not an authenticator entry",
@@ -72,6 +76,9 @@ pub struct TotpEntryView {
     pub period: u32,
     pub remaining: u32,
     pub algorithm: String,
+    pub otp_type: String,
+    pub counter: u64,
+    pub progress: f32,
     pub error: Option<String>,
 }
 
@@ -95,6 +102,9 @@ pub fn authenticator_entries(state: State<'_, AppState>) -> ApiResult<Vec<TotpEn
             period: 30,
             remaining: 0,
             algorithm: "sha1".into(),
+            otp_type: "totp".into(),
+            counter: 0,
+            progress: 0.0,
             error: None,
         };
         match totp_config(item) {
@@ -104,7 +114,10 @@ pub fn authenticator_entries(state: State<'_, AppState>) -> ApiResult<Vec<TotpEn
                 view.digits = config.digits;
                 view.period = config.period;
                 view.algorithm = config.algorithm.as_str().to_ascii_lowercase();
+                view.otp_type = config.otp_type.as_str().to_string();
+                view.counter = config.counter;
                 view.remaining = config.remaining_secs(at);
+                view.progress = config.progress(at);
                 match config.code_at(at) {
                     Ok(code) => view.code = code,
                     Err(err) => view.error = Some(err.to_string()),
@@ -118,20 +131,21 @@ pub fn authenticator_entries(state: State<'_, AppState>) -> ApiResult<Vec<TotpEn
     Ok(out)
 }
 
-/// Add an authenticator entry from an `otpauth://` setup URI (QR scan or paste).
-#[tauri::command]
-pub fn authenticator_add(state: State<'_, AppState>, uri: String) -> ApiResult<Item> {
-    let mut config = TotpConfig::parse_uri(&uri)?;
-    config.normalize();
-    config.validate()?;
-    let title = if !config.issuer.is_empty() {
+/// Title for a new entry: the user's name, else issuer, else account.
+fn entry_title(name: &str, config: &OtpConfig) -> String {
+    let name = name.trim();
+    if !name.is_empty() {
+        name.to_string()
+    } else if !config.issuer.is_empty() {
         config.issuer.clone()
     } else if !config.account.is_empty() {
         config.account.clone()
     } else {
         "Authenticator".to_string()
-    };
-    let mut core = lock_core(&state)?;
+    }
+}
+
+fn store_entry(core: &mut crate::state::Core, config: OtpConfig, title: String) -> ApiResult<Item> {
     let item = Item::new(
         ItemFields::Totp {
             secret: config.secret,
@@ -140,6 +154,8 @@ pub fn authenticator_add(state: State<'_, AppState>, uri: String) -> ApiResult<I
             algorithm: config.algorithm.as_str().to_ascii_lowercase(),
             digits: config.digits,
             period: config.period,
+            otp_type: config.otp_type.as_str().to_string(),
+            counter: config.counter,
         },
         title,
     );
@@ -147,6 +163,99 @@ pub fn authenticator_add(state: State<'_, AppState>, uri: String) -> ApiResult<I
     let stored = core.unlocked()?.unlocked.encrypt_item(&item)?;
     core.auth.db().upsert_item(&stored)?;
     Ok(item)
+}
+
+/// Fields the add form accepts. Every value is validated in the engine.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewAuthenticatorEntry {
+    pub name: String,
+    pub secret: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub otp_type: String,
+    #[serde(default)]
+    pub algorithm: String,
+    #[serde(default)]
+    pub digits: Option<u32>,
+    #[serde(default)]
+    pub period: Option<u32>,
+    #[serde(default)]
+    pub counter: Option<u64>,
+}
+
+/// Add an entry from explicit fields (name, secret, issuer, digits, interval,
+/// algorithm, type) — the manual path used by the authenticator form.
+#[tauri::command]
+pub fn authenticator_add_entry(
+    state: State<'_, AppState>,
+    entry: NewAuthenticatorEntry,
+) -> ApiResult<Item> {
+    let config = OtpConfig::from_parts(
+        &entry.secret,
+        &entry.issuer,
+        &entry.account,
+        &entry.algorithm,
+        entry.digits.unwrap_or(acuye_totp::DEFAULT_DIGITS),
+        entry.period.unwrap_or(acuye_totp::DEFAULT_PERIOD),
+        &entry.otp_type,
+        entry.counter.unwrap_or(0),
+    )?;
+    let title = entry_title(&entry.name, &config);
+    let mut core = lock_core(&state)?;
+    if core.unlocked()?.unlocked.vault.items.iter().any(|existing| {
+        matches!(&existing.fields, ItemFields::Totp { secret, .. } if secret == &config.secret)
+    }) {
+        return Err(ApiError::validation(
+            "That authenticator secret is already in your vault",
+        ));
+    }
+    store_entry(&mut core, config, title)
+}
+
+/// Add an authenticator entry from an `otpauth://` setup URI (paste or transfer).
+#[tauri::command]
+pub fn authenticator_add(state: State<'_, AppState>, uri: String) -> ApiResult<Item> {
+    let config = TotpConfig::parse_uri(&uri)?;
+    let title = entry_title("", &config);
+    let mut core = lock_core(&state)?;
+    store_entry(&mut core, config, title)
+}
+
+/// Move a counter-based (HOTP) entry to its next code.
+#[tauri::command]
+pub fn authenticator_advance_counter(state: State<'_, AppState>, id: String) -> ApiResult<u64> {
+    let mut core = lock_core(&state)?;
+    let (item, counter) = {
+        let live = core.unlocked()?;
+        let item = live
+            .unlocked
+            .vault
+            .get(&id)
+            .ok_or_else(|| ApiError::from(AcuyeError::NotFound("item".into())))?
+            .clone();
+        let config = totp_config(&item)?;
+        if !config.is_counter_based() {
+            return Err(ApiError::validation(
+                "That entry uses time based codes, not a counter",
+            ));
+        }
+        (item, config.counter.saturating_add(1))
+    };
+    let mut updated = item;
+    if let ItemFields::Totp {
+        counter: stored, ..
+    } = &mut updated.fields
+    {
+        *stored = counter;
+    }
+    let updated = core.unlocked()?.unlocked.vault.update(updated)?;
+    let sealed = core.unlocked()?.unlocked.encrypt_item(&updated)?;
+    core.auth.db().upsert_item(&sealed)?;
+    Ok(counter)
 }
 
 /// The `otpauth://` URI for an entry, for re-export to another authenticator.
@@ -1009,7 +1118,7 @@ pub fn lan_accept_sync(state: State<'_, AppState>, timeout_secs: u64) -> ApiResu
     let mut channel = listener.accept(timeout)?;
     let mut session = handshake(&identity, Role::Responder, &mut channel)?;
     let trusted = {
-        let mut core = lock_core(&state)?;
+        let core = lock_core(&state)?;
         let rows = core.auth.db().lan_peers()?;
         let store = trust_store(&rows);
         store

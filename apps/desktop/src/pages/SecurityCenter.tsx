@@ -63,9 +63,8 @@ export function SecurityCenter() {
         <header className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-[22px] font-semibold tracking-[-0.02em]">Security Center</h1>
-            <p className="mt-1 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
-              Local analysis of your vault. Passwords never leave this device and no breach
-              service is contacted.
+            <p className="mt-1 text-[13px] text-muted-foreground">
+              Local password analysis and breach checks by hash prefix.
             </p>
           </div>
           <Button variant="secondary" size="sm" onClick={() => void recheckSecurity()}>

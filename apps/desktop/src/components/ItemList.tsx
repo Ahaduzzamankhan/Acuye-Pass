@@ -148,11 +148,7 @@ export function ItemList({ onAdd }: { onAdd: () => void }) {
               >
                 <X className="h-3 w-3" />
               </button>
-            ) : (
-              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded border border-border bg-muted/70 px-1 font-mono text-[9.5px] text-muted-foreground">
-                ⌘K
-              </span>
-            )}
+            ) : null}
           </div>
           <IconButton
             aria-label="Add item"
@@ -247,7 +243,7 @@ export function ItemList({ onAdd }: { onAdd: () => void }) {
                     }}
                     aria-current={selectedId === item.id ? "true" : undefined}
                     className={cn(
-                      "item-row group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors",
+                      "item-row group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                       selectedId === item.id
                         ? "bg-accent-soft"
                         : "hover:bg-muted/70 focus-visible:bg-muted/70",

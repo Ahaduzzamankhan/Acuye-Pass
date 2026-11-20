@@ -1,9 +1,10 @@
-//! Time-based one-time passwords (RFC 6238) and `otpauth://` setup URIs.
+//! Authenticator engine: RFC 6238 TOTP and RFC 4226 HOTP.
 //!
-//! Everything here is local: a TOTP secret never leaves the process, and the
-//! generated codes are derived from the clock alone. Secrets are handled as
-//! `String`s owned by the caller (vault items are encrypted at rest by
-//! `acuye-vault`), and temporary secret buffers are zeroized after use.
+//! The engine owns everything an authenticator needs — entry metadata (name,
+//! issuer, account), the shared secret, algorithm, digit count, time interval
+//! and code type — and computes codes locally from the clock or a counter.
+//! Nothing here touches the network or the webview: secrets never leave the
+//! process, and temporary buffers are zeroized.
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,38 @@ pub const MIN_DIGITS: u32 = 6;
 pub const MAX_DIGITS: u32 = 8;
 /// A secret shorter than 80 bits is brute-forceable from a single code.
 pub const MIN_SECRET_BYTES: usize = 10;
-/// How many neighbouring steps a verification accepts, to tolerate clock skew.
+/// How many neighbouring steps a TOTP verification accepts.
 pub const VERIFY_SKEW_STEPS: i64 = 1;
+/// How many counter values an HOTP verification looks ahead (RFC 4226 §7.4).
+pub const HOTP_LOOKAHEAD: u64 = 10;
+
+/// Code type. TOTP derives the counter from the clock, HOTP from a stored one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OtpType {
+    #[default]
+    Totp,
+    Hotp,
+}
+
+impl OtpType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Totp => "totp",
+            Self::Hotp => "hotp",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "totp" | "time" | "time_based" => Ok(Self::Totp),
+            "hotp" | "counter" | "counter_based" => Ok(Self::Hotp),
+            _ => Err(AcuyeError::Validation(
+                "Unsupported code type (use TOTP or HOTP)".into(),
+            )),
+        }
+    }
+}
 
 /// Hash used by the provider. SHA-1 is what almost every service uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -58,12 +89,10 @@ impl TotpAlgorithm {
     }
 }
 
-/// A stored authenticator entry.
-///
-/// `secret` is the RFC 4648 base32 shared secret exactly as the provider
-/// displayed it (normalised to uppercase without padding).
+/// One authenticator entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TotpConfig {
+pub struct OtpConfig {
+    /// RFC 4648 base32 shared secret, normalised to uppercase without padding.
     pub secret: String,
     #[serde(default)]
     pub issuer: String,
@@ -75,6 +104,10 @@ pub struct TotpConfig {
     pub digits: u32,
     #[serde(default = "default_period")]
     pub period: u32,
+    #[serde(default)]
+    pub otp_type: OtpType,
+    #[serde(default)]
+    pub counter: u64,
 }
 
 fn default_digits() -> u32 {
@@ -85,8 +118,67 @@ fn default_period() -> u32 {
     DEFAULT_PERIOD
 }
 
-impl TotpConfig {
-    /// Validate the shape of a configuration before it is stored.
+impl Default for OtpConfig {
+    fn default() -> Self {
+        Self {
+            secret: String::new(),
+            issuer: String::new(),
+            account: String::new(),
+            algorithm: TotpAlgorithm::Sha1,
+            digits: DEFAULT_DIGITS,
+            period: DEFAULT_PERIOD,
+            otp_type: OtpType::Totp,
+            counter: 0,
+        }
+    }
+}
+
+/// Backwards-compatible name for the engine entry.
+pub type TotpConfig = OtpConfig;
+
+impl OtpConfig {
+    /// Build an entry from user supplied parts, normalising and validating it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        secret: &str,
+        issuer: &str,
+        account: &str,
+        algorithm: &str,
+        digits: u32,
+        period: u32,
+        otp_type: &str,
+        counter: u64,
+    ) -> Result<Self> {
+        let mut entry = Self {
+            secret: secret.to_string(),
+            issuer: issuer.to_string(),
+            account: account.to_string(),
+            algorithm: TotpAlgorithm::parse(algorithm)?,
+            digits,
+            period,
+            otp_type: OtpType::parse(otp_type)?,
+            counter,
+        };
+        entry.normalize();
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    /// Display label: `Issuer · account` like Google Authenticator shows.
+    pub fn label(&self) -> String {
+        match (self.issuer.trim(), self.account.trim()) {
+            ("", "") => "Authenticator".to_string(),
+            ("", account) => account.to_string(),
+            (issuer, "") => issuer.to_string(),
+            (issuer, account) => format!("{issuer} · {account}"),
+        }
+    }
+
+    pub fn is_counter_based(&self) -> bool {
+        self.otp_type == OtpType::Hotp
+    }
+
+    /// Validate the shape of an entry before it is stored.
     pub fn validate(&self) -> Result<()> {
         let bytes = decode_base32(&self.secret)?;
         if bytes.len() < MIN_SECRET_BYTES {
@@ -123,42 +215,91 @@ impl TotpConfig {
         self.account = self.account.trim().to_string();
     }
 
-    /// The six-digit (or configured length) code for a UNIX timestamp.
+    /// The code for a UNIX timestamp (TOTP) or the stored counter (HOTP).
     pub fn code_at(&self, unix_time: u64) -> Result<String> {
         self.validate()?;
+        let counter = match self.otp_type {
+            OtpType::Totp => unix_time / u64::from(self.period),
+            OtpType::Hotp => self.counter,
+        };
+        self.code_for_counter(counter)
+    }
+
+    /// The code for an explicit counter value.
+    pub fn code_for_counter(&self, counter: u64) -> Result<String> {
+        self.validate()?;
         let mut secret = decode_base32(&self.secret)?;
-        let code = hotp(
-            &secret,
-            unix_time / u64::from(self.period),
-            self.digits,
-            self.algorithm,
-        );
+        let code = hotp(&secret, counter, self.digits, self.algorithm);
         secret.zeroize();
         code
     }
 
-    /// Whole seconds until the current code rolls over.
+    /// Whole seconds until the current TOTP code rolls over (0 for HOTP).
     pub fn remaining_secs(&self, unix_time: u64) -> u32 {
+        if self.is_counter_based() {
+            return 0;
+        }
         let period = u64::from(self.period.max(1));
         let elapsed = unix_time % period;
-        // A code that expires this very second still counts as one second left.
         (period - elapsed) as u32
     }
 
-    /// Number of steps already used in the current window (0.0 ..= 1.0 ratio is
-    /// derived by the UI from `remaining_secs` and `period`).
+    /// Fraction of the current window already used, 0.0 ..= 1.0.
+    pub fn progress(&self, unix_time: u64) -> f32 {
+        if self.is_counter_based() {
+            return 0.0;
+        }
+        let period = f32::from(self.period.max(1) as u16);
+        let remaining = self.remaining_secs(unix_time) as f32;
+        1.0 - (remaining / period).clamp(0.0, 1.0)
+    }
+
+    /// Current step (time window index or counter value).
     pub fn step(&self, unix_time: u64) -> u64 {
-        unix_time / u64::from(self.period.max(1))
+        match self.otp_type {
+            OtpType::Totp => unix_time / u64::from(self.period.max(1)),
+            OtpType::Hotp => self.counter,
+        }
     }
 
-    /// Constant-time-ish comparison against a user supplied code, accepting one
-    /// step of clock skew in either direction.
+    /// Verify a user supplied code. TOTP accepts one step of clock skew; HOTP
+    /// searches the next `HOTP_LOOKAHEAD` counters and returns the matched one so
+    /// the caller can advance the stored counter.
     pub fn verify(&self, candidate: &str, unix_time: u64) -> Result<bool> {
-        with_window(self, unix_time, |config, t| config.code_at(t))
-            .map(|codes| codes.iter().any(|code| code == candidate))
+        Ok(self.matched_counter(candidate, unix_time)?.is_some())
     }
 
-    /// `otpauth://totp/...` URI for QR export.
+    /// The counter value that produced `candidate`, if any.
+    pub fn matched_counter(&self, candidate: &str, unix_time: u64) -> Result<Option<u64>> {
+        let candidate = candidate.trim();
+        match self.otp_type {
+            OtpType::Totp => {
+                let step_secs = u64::from(self.period.max(1));
+                for offset in -VERIFY_SKEW_STEPS..=VERIFY_SKEW_STEPS {
+                    let shifted = unix_time as i128 + offset as i128 * step_secs as i128;
+                    if shifted < 0 {
+                        continue;
+                    }
+                    let time = shifted as u64;
+                    if self.code_at(time)? == candidate {
+                        return Ok(Some(time / step_secs));
+                    }
+                }
+                Ok(None)
+            }
+            OtpType::Hotp => {
+                for offset in 0..=HOTP_LOOKAHEAD {
+                    let counter = self.counter.saturating_add(offset);
+                    if self.code_for_counter(counter)? == candidate {
+                        return Ok(Some(counter));
+                    }
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// `otpauth://` URI for QR export or transfer to another authenticator app.
     pub fn to_uri(&self) -> String {
         let label = if self.issuer.is_empty() {
             url_encode(&self.account)
@@ -168,11 +309,16 @@ impl TotpConfig {
             format!("{}:{}", url_encode(&self.issuer), url_encode(&self.account))
         };
         let mut uri = format!(
-            "otpauth://totp/{label}?secret={}&digits={}&period={}",
+            "otpauth://{}/{label}?secret={}&digits={}",
+            self.otp_type.as_str(),
             url_encode(&self.secret),
-            self.digits,
-            self.period
+            self.digits
         );
+        if self.is_counter_based() {
+            uri.push_str(&format!("&counter={}", self.counter));
+        } else {
+            uri.push_str(&format!("&period={}", self.period));
+        }
         if !self.issuer.is_empty() {
             uri.push_str(&format!("&issuer={}", url_encode(&self.issuer)));
         }
@@ -182,26 +328,33 @@ impl TotpConfig {
         uri
     }
 
-    /// Parse an `otpauth://totp/...` URI (what a setup QR code contains).
+    /// Parse an `otpauth://totp/…` or `otpauth://hotp/…` setup URI.
     pub fn parse_uri(uri: &str) -> Result<Self> {
         let trimmed = uri.trim();
-        let rest = trimmed
-            .strip_prefix("otpauth://totp/")
-            .or_else(|| trimmed.strip_prefix("OTPAUTH://TOTP/"))
-            .ok_or_else(|| {
-                AcuyeError::Validation("That is not an otpauth://totp/ setup URI".into())
-            })?;
+        let lower = trimmed.to_ascii_lowercase();
+        let (otp_type, rest) = if let Some(rest) = lower
+            .starts_with("otpauth://totp/")
+            .then(|| &trimmed["otpauth://totp/".len()..])
+        {
+            (OtpType::Totp, rest)
+        } else if let Some(rest) = lower
+            .starts_with("otpauth://hotp/")
+            .then(|| &trimmed["otpauth://hotp/".len()..])
+        {
+            (OtpType::Hotp, rest)
+        } else {
+            return Err(AcuyeError::Validation(
+                "That is not an otpauth:// setup URI".into(),
+            ));
+        };
+
         let (label, query) = match rest.split_once('?') {
             Some((label, query)) => (label, query),
             None => (rest, ""),
         };
-        let mut config = TotpConfig {
-            secret: String::new(),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: DEFAULT_DIGITS,
-            period: DEFAULT_PERIOD,
+        let mut config = OtpConfig {
+            otp_type,
+            ..OtpConfig::default()
         };
         let decoded_label = url_decode(label);
         match decoded_label.split_once(':') {
@@ -239,6 +392,11 @@ impl TotpConfig {
                         AcuyeError::Validation("Invalid period in the setup URI".into())
                     })?
                 }
+                "counter" => {
+                    config.counter = value.trim().parse().map_err(|_| {
+                        AcuyeError::Validation("Invalid counter in the setup URI".into())
+                    })?
+                }
                 _ => {}
             }
         }
@@ -251,21 +409,32 @@ impl TotpConfig {
     }
 }
 
-/// Codes for the current step and its two neighbours, oldest first.
-fn with_window<F>(config: &TotpConfig, unix_time: u64, mut code: F) -> Result<Vec<String>>
-where
-    F: FnMut(&TotpConfig, u64) -> Result<String>,
-{
-    let step_secs = u64::from(config.period.max(1));
-    let mut codes = Vec::with_capacity(3);
-    for offset in -VERIFY_SKEW_STEPS..=VERIFY_SKEW_STEPS {
-        let shifted = unix_time as i128 + offset as i128 * step_secs as i128;
-        if shifted < 0 {
-            continue;
+/// Batch view of an entry, handy for list UIs that should not expose secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OtpSummary {
+    pub label: String,
+    pub issuer: String,
+    pub account: String,
+    pub otp_type: OtpType,
+    pub algorithm: TotpAlgorithm,
+    pub digits: u32,
+    pub period: u32,
+    pub counter: u64,
+}
+
+impl OtpConfig {
+    pub fn summary(&self) -> OtpSummary {
+        OtpSummary {
+            label: self.label(),
+            issuer: self.issuer.clone(),
+            account: self.account.clone(),
+            otp_type: self.otp_type,
+            algorithm: self.algorithm,
+            digits: self.digits,
+            period: self.period,
+            counter: self.counter,
         }
-        codes.push(code(config, shifted as u64)?);
     }
-    Ok(codes)
 }
 
 fn hotp(secret: &[u8], counter: u64, digits: u32, algorithm: TotpAlgorithm) -> Result<String> {
@@ -405,8 +574,17 @@ mod tests {
     use super::*;
 
     fn rfc_secret_base32() -> String {
-        // "12345678901234567890" from RFC 6238 appendix B.
+        // "12345678901234567890" from RFC 6238 / RFC 4226.
         encode_base32(b"12345678901234567890")
+    }
+
+    fn totp(digits: u32, period: u32) -> OtpConfig {
+        OtpConfig {
+            secret: rfc_secret_base32(),
+            digits,
+            period,
+            ..OtpConfig::default()
+        }
     }
 
     #[test]
@@ -418,21 +596,13 @@ mod tests {
         assert_eq!(encode_base32(b"fooba"), "MZXW6YTB");
         assert_eq!(encode_base32(b"foobar"), "MZXW6YTBOI");
         assert_eq!(decode_base32("MZXW6YTBOI").unwrap(), b"foobar");
-        // Tolerant of lowercase, spaces, dashes and padding.
         assert_eq!(decode_base32("mzxw 6ytb-oi====").unwrap(), b"foobar");
         assert!(decode_base32("not base32!").is_err());
     }
 
     #[test]
     fn sha1_matches_rfc6238_vectors() {
-        let config = TotpConfig {
-            secret: rfc_secret_base32(),
-            issuer: "Acuye".into(),
-            account: "ada@example.com".into(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: 8,
-            period: 30,
-        };
+        let config = totp(8, 30);
         for (time, expected) in [
             (59u64, "94287082"),
             (1_111_111_109, "07081804"),
@@ -447,20 +617,16 @@ mod tests {
 
     #[test]
     fn sha256_and_sha512_match_rfc6238_vectors() {
-        // RFC 6238 appendix B uses a different seed per hash: 32 bytes for
-        // SHA-256 and 64 bytes for SHA-512.
-        let sha256 = TotpConfig {
+        let sha256 = OtpConfig {
             secret: encode_base32(b"12345678901234567890123456789012"),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha256,
             digits: 8,
-            period: 30,
+            algorithm: TotpAlgorithm::Sha256,
+            ..OtpConfig::default()
         };
         assert_eq!(sha256.code_at(59).unwrap(), "46119246");
         assert_eq!(sha256.code_at(20_000_000_000).unwrap(), "77737706");
 
-        let sha512 = TotpConfig {
+        let sha512 = OtpConfig {
             secret: encode_base32(
                 b"1234567890123456789012345678901234567890123456789012345678901234",
             ),
@@ -472,109 +638,178 @@ mod tests {
     }
 
     #[test]
-    fn six_digit_codes_are_the_rfc_vectors_truncated() {
-        let config = TotpConfig {
+    fn hotp_matches_rfc4226_vectors() {
+        let config = OtpConfig {
             secret: rfc_secret_base32(),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha1,
             digits: 6,
-            period: 30,
+            otp_type: OtpType::Hotp,
+            ..OtpConfig::default()
         };
-        assert_eq!(config.code_at(59).unwrap(), "287082");
+        let expected = [
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+            "399871", "520489",
+        ];
+        for (counter, code) in expected.iter().enumerate() {
+            assert_eq!(
+                config.code_for_counter(counter as u64).unwrap(),
+                *code,
+                "counter={counter}"
+            );
+        }
+        // Counter 0 is the code at counter 0, and `code_at` ignores the clock.
+        assert_eq!(config.code_at(1_700_000_000).unwrap(), "755224");
+    }
+
+    #[test]
+    fn six_digit_codes_are_the_rfc_vectors_truncated() {
+        assert_eq!(totp(6, 30).code_at(59).unwrap(), "287082");
     }
 
     #[test]
     fn sixty_second_period_is_supported() {
-        let config = TotpConfig {
-            secret: rfc_secret_base32(),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: 6,
-            period: 60,
-        };
-        // A 60s window opens at multiples of 60, so 30s and 59s share a code.
+        let config = totp(6, 60);
         assert_eq!(config.code_at(30).unwrap(), config.code_at(59).unwrap());
         assert_ne!(config.code_at(59).unwrap(), config.code_at(61).unwrap());
         assert_eq!(config.remaining_secs(60), 60);
         assert_eq!(config.remaining_secs(119), 1);
+        assert!(config.progress(60) < 0.01);
     }
 
     #[test]
-    fn verification_accepts_one_step_of_skew() {
-        let config = TotpConfig {
-            secret: rfc_secret_base32(),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: 6,
-            period: 30,
-        };
+    fn totp_verification_accepts_one_step_of_skew() {
+        let config = totp(6, 30);
         let now = 1_111_111_111u64;
-        let current = config.code_at(now).unwrap();
-        let previous = config.code_at(now - 30).unwrap();
-        let next = config.code_at(now + 30).unwrap();
-        assert!(config.verify(&current, now).unwrap());
-        assert!(config.verify(&previous, now).unwrap());
-        assert!(config.verify(&next, now).unwrap());
+        assert!(config.verify(&config.code_at(now).unwrap(), now).unwrap());
+        assert!(config
+            .verify(&config.code_at(now - 30).unwrap(), now)
+            .unwrap());
+        assert!(config
+            .verify(&config.code_at(now + 30).unwrap(), now)
+            .unwrap());
         assert!(!config
             .verify(&config.code_at(now + 300).unwrap(), now)
             .unwrap());
-        assert!(!config.verify("000000", now).unwrap() || current == "000000");
+    }
+
+    #[test]
+    fn hotp_verification_reports_the_matched_counter() {
+        let config = OtpConfig {
+            secret: rfc_secret_base32(),
+            digits: 6,
+            otp_type: OtpType::Hotp,
+            counter: 3,
+            ..OtpConfig::default()
+        };
+        // A code from the next few counters is accepted and returns that value.
+        assert_eq!(
+            config.matched_counter("338314", 1_700_000_000).unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            config.matched_counter("999999", 1_700_000_000).unwrap(),
+            None
+        );
+        // Far-future codes are outside the look-ahead window.
+        let far = config.code_for_counter(40).unwrap();
+        assert_eq!(config.matched_counter(&far, 1_700_000_000).unwrap(), None);
+        assert_eq!(config.remaining_secs(1_700_000_000), 0);
     }
 
     #[test]
     fn uri_roundtrip_preserves_settings() {
         let uri = "otpauth://totp/GitHub:ada%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DP&issuer=GitHub&algorithm=SHA256&digits=7&period=60";
-        let config = TotpConfig::parse_uri(uri).unwrap();
+        let config = OtpConfig::parse_uri(uri).unwrap();
         assert_eq!(config.issuer, "GitHub");
         assert_eq!(config.account, "ada@example.com");
         assert_eq!(config.digits, 7);
         assert_eq!(config.period, 60);
-        assert_eq!(config.algorithm, TotpAlgorithm::Sha256);
-        let again = TotpConfig::parse_uri(&config.to_uri()).unwrap();
-        assert_eq!(again, config);
+        assert_eq!(config.otp_type, OtpType::Totp);
+        assert_eq!(OtpConfig::parse_uri(&config.to_uri()).unwrap(), config);
+
+        let hotp_uri =
+            "otpauth://hotp/Bank:ada?secret=JBSWY3DPEHPK3PXPJBSWY3DP&counter=12&issuer=Bank";
+        let hotp = OtpConfig::parse_uri(hotp_uri).unwrap();
+        assert_eq!(hotp.otp_type, OtpType::Hotp);
+        assert_eq!(hotp.counter, 12);
+        assert_eq!(OtpConfig::parse_uri(&hotp.to_uri()).unwrap(), hotp);
+        assert!(hotp.to_uri().contains("counter=12"));
     }
 
     #[test]
     fn uri_without_secret_or_wrong_scheme_is_rejected() {
-        assert!(TotpConfig::parse_uri("otpauth://totp/a?issuer=x").is_err());
-        assert!(TotpConfig::parse_uri("https://example.com").is_err());
-        assert!(TotpConfig::parse_uri("otpauth://hotp/a?secret=JBSWY3DPEHPK3PXP").is_err());
+        assert!(OtpConfig::parse_uri("otpauth://totp/a?issuer=x").is_err());
+        assert!(OtpConfig::parse_uri("https://example.com").is_err());
+        assert!(OtpConfig::parse_uri("otpauth://yandex/a?secret=JBSWY3DPEHPK3PXP").is_err());
     }
 
     #[test]
-    fn short_secrets_and_bad_parameters_are_rejected() {
-        let mut config = TotpConfig {
-            secret: "JBSWY3DP".into(),
-            issuer: String::new(),
-            account: String::new(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: 6,
-            period: 30,
-        };
+    fn entries_validate_their_parts() {
+        assert!(OtpConfig::from_parts(
+            "JBSWY3DPEHPK3PXP",
+            "GitHub",
+            "ada",
+            "sha256",
+            6,
+            30,
+            "totp",
+            0
+        )
+        .is_ok());
+        assert!(OtpConfig::from_parts(
+            "JBSWY3DPEHPK3PXP",
+            "GitHub",
+            "ada",
+            "md5",
+            6,
+            30,
+            "totp",
+            0
+        )
+        .is_err());
+        assert!(OtpConfig::from_parts(
+            "JBSWY3DPEHPK3PXP",
+            "GitHub",
+            "ada",
+            "sha1",
+            6,
+            30,
+            "sms",
+            0
+        )
+        .is_err());
+        // Short secret, bad digits, bad interval.
+        assert!(OtpConfig::from_parts("JBSWY3DP", "x", "y", "sha1", 6, 30, "totp", 0).is_err());
         assert!(
-            config.validate().is_err(),
-            "8 base32 chars is below 80 bits"
+            OtpConfig::from_parts("JBSWY3DPEHPK3PXP", "x", "y", "sha1", 9, 30, "totp", 0).is_err()
         );
-        config.secret = rfc_secret_base32();
-        config.digits = 9;
-        assert!(config.validate().is_err());
-        config.digits = 6;
-        config.period = 5;
-        assert!(config.validate().is_err());
+        assert!(
+            OtpConfig::from_parts("JBSWY3DPEHPK3PXP", "x", "y", "sha1", 6, 5, "totp", 0).is_err()
+        );
+    }
+
+    #[test]
+    fn labels_and_summaries_never_include_the_secret() {
+        let config = OtpConfig {
+            secret: rfc_secret_base32(),
+            issuer: "GitHub".into(),
+            account: "ada@example.com".into(),
+            ..OtpConfig::default()
+        };
+        assert_eq!(config.label(), "GitHub · ada@example.com");
+        let summary = config.summary();
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(!json.contains(&config.secret));
+        assert!(json.contains("ada@example.com"));
+        assert_eq!(summary.otp_type, OtpType::Totp);
     }
 
     #[test]
     fn normalize_strips_formatting() {
-        let mut config = TotpConfig {
+        let mut config = OtpConfig {
             secret: " jbsw y3dp-ehpk3pxp ".into(),
             issuer: "  GitHub ".into(),
             account: " ada ".into(),
-            algorithm: TotpAlgorithm::Sha1,
-            digits: 6,
-            period: 30,
+            ..OtpConfig::default()
         };
         config.normalize();
         assert_eq!(config.secret, "JBSWY3DPEHPK3PXP");

@@ -25,6 +25,7 @@ import type {
   LanPairResult,
   LanPeer,
   LanSyncResult,
+  NewAuthenticatorEntry,
   SecretAccessEntry,
   SecretAlert,
   TotpEntry,
@@ -231,6 +232,12 @@ export class TauriBackend implements Backend {
   }
   authenticatorAdd(uri: string) {
     return call<Item>("authenticator_add", { uri });
+  }
+  authenticatorAddEntry(entry: NewAuthenticatorEntry) {
+    return call<Item>("authenticator_add_entry", { entry });
+  }
+  authenticatorAdvanceCounter(id: string) {
+    return call<number>("authenticator_advance_counter", { id });
   }
   authenticatorExport(id: string) {
     return call<string>("authenticator_export", { id });

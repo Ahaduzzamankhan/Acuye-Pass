@@ -515,7 +515,7 @@ function AuthenticationSection() {
     <>
       <SectionHeading
         title="Authentication"
-        description="Username + master password only. Acuye Pass has no biometric unlock by design."
+        description="Username and master password only; no biometric unlock."
       />
       <Card>
         <Row title="Account" description={`Created ${formatDate(account?.created_at ?? null)}`}>
@@ -621,10 +621,8 @@ function DevicesSection() {
           </ul>
         )}
       </Card>
-      <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
-        Device revocation only becomes meaningful once a bring-your-own-backend sync transport is
-        implemented. The protocol messages for registration and revocation already exist in
-        <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[10.5px]">acuye-protocol</code>.
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        Revoked devices cannot sync. Pairing covers LAN sync today.
       </p>
     </>
   );
@@ -638,7 +636,7 @@ function PrivacySection() {
     <>
       <SectionHeading
         title="Privacy Center"
-        description="Acuye Pass is local-first. Telemetry and analytics are not implemented in this build, not merely switched off."
+        description="No telemetry or analytics are included in this build."
       />
       <Card>
         <Row title="Telemetry" description="No telemetry endpoint exists in this build. The setting is rejected by the backend.">
@@ -678,10 +676,9 @@ function PrivacySection() {
         <p className="flex items-center gap-1.5 text-[12px] font-medium">
           <WifiOff className="h-3.5 w-3.5" /> What leaves this device
         </p>
-        <ul className="mt-2 space-y-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
-          <li>· Update checks to api.github.com when you allow them.</li>
-          <li>· A favicon request to the item's own website when enabled.</li>
-          <li>· Nothing else. Vault contents, passwords and usage data stay local.</li>
+        <ul className="mt-2 space-y-1.5 text-[11.5px] text-muted-foreground">
+          <li>· Update checks to api.github.com, when enabled</li>
+          <li>· Favicon requests to an item's own website, when enabled</li>
         </ul>
       </div>
     </>
@@ -723,9 +720,9 @@ function NetworkSection() {
       </Card>
       <div className="mt-4 flex gap-3 rounded-xl border border-border bg-surface p-4">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-        <p className="text-[11.5px] leading-relaxed text-muted-foreground">
-          Acuye Pass blocks favicon requests that resolve to loopback, link-local, private or
-          otherwise special-purpose addresses to prevent SSRF. Redirects are not followed.
+        <p className="text-[11.5px] text-muted-foreground">
+          Favicon requests to loopback, link-local and private addresses are blocked; redirects are
+          not followed.
         </p>
       </div>
     </>
@@ -761,7 +758,7 @@ function SyncSection() {
     <>
       <SectionHeading
         title="Sync Providers"
-        description="Bring your own backend. Acuye Pass will never require Fluxenite-hosted sync infrastructure."
+        description="Bring your own backend; no hosted sync is required."
       />
       <div className="mb-4 flex gap-3 rounded-xl border border-warning/30 bg-warning/[0.07] p-4">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
@@ -1566,7 +1563,7 @@ function UpdatesSection() {
         open={channelDialog !== null}
         onOpenChange={(open) => !open && setChannelDialog(null)}
         title={`Switch to the ${channelDialog ?? ""} channel?`}
-        description="Prereleases are opt-in. Acuye Pass never switches channels on its own."
+        description="Prereleases are opt-in."
         size="sm"
         footer={
           <>

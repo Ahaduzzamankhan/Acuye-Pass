@@ -2,7 +2,6 @@ import { Laptop, Link2, QrCode, Radio, RefreshCw, ShieldCheck, Trash2, Users } f
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useState } from "react";
 
-import { QrScanner } from "@/components/QrScanner";
 import { Badge, Button, Input, Spinner } from "@/components/ui";
 import { useBackend } from "@/lib/backend-context";
 import type { LanIdentity, LanOffer, LanPairResult, LanPeer, LanSyncResult } from "@/lib/types";
@@ -15,7 +14,6 @@ export function DevicesPage() {
   const [pairing, setPairing] = useState<LanPairResult | null>(null);
   const [sync, setSync] = useState<LanSyncResult | null>(null);
   const [incoming, setIncoming] = useState("");
-  const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -69,7 +67,6 @@ export function DevicesPage() {
     if (!uri.trim()) return;
     setBusy(true);
     setError(null);
-    setScanning(false);
     try {
       const result = await backend.lanPair(uri.trim());
       setPairing(result);
@@ -167,9 +164,8 @@ export function DevicesPage() {
       <div className="mx-auto w-full max-w-4xl px-8 py-8">
         <header>
           <h1 className="text-[22px] font-semibold tracking-[-0.02em]">Trusted devices</h1>
-          <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-muted-foreground">
-            Pair another PC on this network directly. There is no server and no account involved:
-            devices authenticate each other with a one-time code, then keep an encrypted channel.
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            Pair PCs on this network. Devices verify each other once, then sync encrypted data.
           </p>
         </header>
 
@@ -182,14 +178,11 @@ export function DevicesPage() {
             <p className="mt-1 font-mono text-[11.5px] text-muted-foreground">
               {identity ? identity.address : "…"}
             </p>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-              The identity is derived from your vault key, so it never has to be stored separately.
-            </p>
           </div>
           <div className="rounded-xl border border-border bg-surface p-4">
             <p className="text-[12px] font-medium">Pair a new device</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              Show a code here and scan it on the other PC, or paste the code it shows here.
+              Show a code here and enter it on the other PC, or paste the code it shows here.
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" disabled={busy} onClick={() => void showOffer()}>
@@ -228,7 +221,7 @@ export function DevicesPage() {
         ) : null}
 
         <section className="mt-3 rounded-xl border border-border bg-surface p-4">
-          <p className="text-[12.5px] font-medium">I scanned a code</p>
+          <p className="text-[12.5px] font-medium">I have a pairing code</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <Input
               className="min-w-[260px] flex-1 font-mono text-[11.5px]"
@@ -240,15 +233,7 @@ export function DevicesPage() {
             <Button size="sm" disabled={busy || !incoming.trim()} onClick={() => void pairWith(incoming)}>
               <Link2 className="h-3.5 w-3.5" /> Pair
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setScanning((value) => !value)}>
-              Scan QR
-            </Button>
           </div>
-          {scanning ? (
-            <div className="mt-3">
-              <QrScanner onDecode={(text) => void pairWith(text)} onClose={() => setScanning(false)} />
-            </div>
-          ) : null}
         </section>
 
         {notice ? (

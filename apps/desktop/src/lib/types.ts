@@ -66,6 +66,8 @@ export type ItemFields =
       algorithm: string;
       digits: number;
       period: number;
+      otp_type: string;
+      counter: number;
     }
   | {
       kind: "secret";
@@ -424,6 +426,8 @@ export const emptyFields = (kind: ItemType): ItemFields => {
         algorithm: "sha1",
         digits: 6,
         period: 30,
+        otp_type: "totp",
+        counter: 0,
       };
     case "secret":
       return {
@@ -476,7 +480,23 @@ export interface TotpEntry {
   period: number;
   remaining: number;
   algorithm: string;
+  otpType: string;
+  counter: number;
+  progress: number;
   error: string | null;
+}
+
+/** Everything the authenticator form accepts, validated in Rust. */
+export interface NewAuthenticatorEntry {
+  name: string;
+  secret: string;
+  issuer: string;
+  account: string;
+  otpType: string;
+  algorithm: string;
+  digits: number;
+  period: number;
+  counter: number;
 }
 
 export interface SecretAccessEntry {

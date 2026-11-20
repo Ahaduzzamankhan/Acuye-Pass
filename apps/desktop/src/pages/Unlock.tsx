@@ -124,10 +124,8 @@ export function Unlock() {
             Forgot your master password?
           </button>
 
-          <p className="mt-6 text-center text-[10.5px] leading-relaxed text-muted-foreground/70">
-            Local-first · No cloud account
-            <br />
-            Acuye Pass can never reset your master password.
+          <p className="mt-6 text-center text-[10.5px] text-muted-foreground/70">
+            Local only · No cloud account
           </p>
         </motion.div>
       </div>

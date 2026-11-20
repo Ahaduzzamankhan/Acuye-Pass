@@ -152,6 +152,12 @@ pub enum ItemFields {
         digits: u32,
         #[serde(default = "default_totp_period")]
         period: u32,
+        /// `totp` (time based, default) or `hotp` (counter based).
+        #[serde(default)]
+        otp_type: String,
+        /// Counter for HOTP entries; ignored by TOTP.
+        #[serde(default)]
+        counter: u64,
     },
     /// Secret manager entry: API keys, database credentials, environment
     /// variables, OAuth tokens, SSH keys and custom fields, tagged with the
@@ -242,6 +248,8 @@ impl ItemFields {
                 algorithm: String::new(),
                 digits: default_totp_digits(),
                 period: default_totp_period(),
+                otp_type: String::new(),
+                counter: 0,
             },
             ItemType::Secret => Self::Secret {
                 environment: "development".into(),
@@ -432,6 +440,16 @@ impl Item {
                 return Err(AcuyeError::Validation("Website URL is too long".into()));
             }
         }
+        if let ItemFields::Totp { otp_type, .. } = &self.fields {
+            match otp_type.trim().to_ascii_lowercase().as_str() {
+                "" | "totp" | "hotp" => {}
+                _ => {
+                    return Err(AcuyeError::Validation(
+                        "Code type must be TOTP or HOTP".into(),
+                    ))
+                }
+            }
+        }
         match &self.fields {
             ItemFields::Totp {
                 secret,
@@ -440,6 +458,7 @@ impl Item {
                 algorithm,
                 issuer,
                 account,
+                ..
             } => {
                 if secret.trim().is_empty() {
                     return Err(AcuyeError::Validation(

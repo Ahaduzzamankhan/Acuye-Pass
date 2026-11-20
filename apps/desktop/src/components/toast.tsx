@@ -17,6 +17,7 @@ interface ToastItem {
   id: string;
   title: string;
   description?: string;
+  detail?: string;
   tone: ToastTone;
 }
 
@@ -25,6 +26,23 @@ interface ToastContextValue {
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
+
+/**
+ * Long machine paths (backup and export locations) used to overflow the toast.
+ * Show the file name and keep the full path in the tooltip instead.
+ */
+function describe(text: string): { shown: string; detail?: string } {
+  const trimmed = text.trim();
+  if (trimmed.length <= 56 || !/[\\/]/.test(trimmed)) {
+    return { shown: trimmed };
+  }
+  const name = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed;
+  const parent = trimmed.split(/[\\/]/).filter(Boolean).slice(-2, -1)[0];
+  return {
+    shown: parent ? `${parent}/${name}` : name,
+    detail: trimmed,
+  };
+}
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -36,7 +54,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const push = useCallback(
     ({ title, description, tone = "info" }: { title: string; description?: string; tone?: ToastTone }) => {
       const id = crypto.randomUUID();
-      setToasts((current) => [...current.slice(-3), { id, title, description, tone }]);
+      const described = description ? describe(description) : null;
+      setToasts((current) => [
+        // Collapse duplicates so repeated actions do not stack identical cards.
+        ...current.filter((toast) => !(toast.title === title && toast.tone === tone)).slice(-2),
+        {
+          id,
+          title,
+          description: described?.shown,
+          detail: described?.detail,
+          tone,
+        },
+      ]);
       window.setTimeout(() => dismiss(id), tone === "error" ? 7000 : 4200);
     },
     [dismiss],
@@ -48,7 +77,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       <div
-        className="pointer-events-none fixed bottom-4 right-4 z-[80] flex w-[340px] flex-col gap-2"
+        className="pointer-events-none fixed bottom-9 right-3 z-[80] flex w-[min(360px,calc(100vw-1.5rem))] flex-col gap-2"
         role="region"
         aria-label="Notifications"
         aria-live="polite"
@@ -58,38 +87,44 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <motion.div
               key={toast.id}
               layout
-              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              initial={{ opacity: 0, y: 10, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 24, scale: 0.98 }}
-              transition={{ type: "spring", stiffness: 420, damping: 32 }}
-              className="pointer-events-auto flex items-start gap-3 rounded-lg border border-border bg-surface p-3 shadow-lg shadow-black/10"
+              exit={{ opacity: 0, x: 16, scale: 0.98 }}
+              transition={{ type: "spring", stiffness: 420, damping: 34 }}
+              className="pointer-events-auto flex items-start gap-2.5 overflow-hidden rounded-xl border border-border/80 bg-surface/95 p-3 pr-2 shadow-xl shadow-black/15 backdrop-blur"
+              title={toast.detail}
             >
               <span
                 className={cn(
-                  "mt-0.5",
-                  toast.tone === "success" && "text-success",
-                  toast.tone === "error" && "text-danger",
-                  toast.tone === "info" && "text-accent",
+                  "mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
+                  toast.tone === "success" && "bg-success/12 text-success",
+                  toast.tone === "error" && "bg-danger/12 text-danger",
+                  toast.tone === "info" && "bg-accent-soft text-accent",
                 )}
               >
                 {toast.tone === "success" ? (
-                  <CheckCircle2 className="h-4 w-4" />
+                  <CheckCircle2 className="h-3.5 w-3.5" />
                 ) : toast.tone === "error" ? (
-                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTriangle className="h-3.5 w-3.5" />
                 ) : (
-                  <Info className="h-4 w-4" />
+                  <Info className="h-3.5 w-3.5" />
                 )}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium leading-snug">{toast.title}</p>
+                <p className="text-[12.5px] font-medium leading-snug">{toast.title}</p>
                 {toast.description ? (
-                  <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{toast.description}</p>
+                  <p
+                    className="mt-0.5 break-all text-[11.5px] leading-snug text-muted-foreground"
+                    dir="ltr"
+                  >
+                    {toast.description}
+                  </p>
                 ) : null}
               </div>
               <button
                 type="button"
                 onClick={() => dismiss(toast.id)}
-                className="rounded p-1 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+                className="-mr-0.5 shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
                 aria-label="Dismiss notification"
               >
                 <X className="h-3.5 w-3.5" />

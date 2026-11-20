@@ -54,10 +54,7 @@ export function VaultsPage() {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-3xl px-8 py-8">
         <h1 className="text-[22px] font-semibold tracking-[-0.02em]">Vaults</h1>
-        <p className="mt-1 max-w-xl text-[13px] leading-relaxed text-muted-foreground">
-          Acuye Pass stores one encrypted local vault in this phase. Additional vaults and
-          bring-your-own-backend sync are prepared in the Rust architecture but not enabled.
-        </p>
+        <p className="mt-1 text-[13px] text-muted-foreground">One encrypted vault on this device.</p>
 
         <section className="mt-6 overflow-hidden rounded-xl border border-border bg-surface">
           <div className="flex items-start gap-4 p-5">
@@ -73,10 +70,6 @@ export function VaultsPage() {
               <p className="mt-1 text-[12px] text-muted-foreground">
                 {counts.total} items · {counts.logins} passwords · {counts.notes} notes ·{" "}
                 {counts.favorites} favorites
-              </p>
-              <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <ShieldCheck className="h-3 w-3 text-success" />
-                Argon2id key derivation · XChaCha20-Poly1305 item encryption
               </p>
             </div>
             <div className="flex shrink-0 gap-1.5">
