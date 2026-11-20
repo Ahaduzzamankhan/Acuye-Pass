@@ -57,6 +57,22 @@ jobs:
           esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Verify updater public key matches config
+        shell: bash
+        env:
+          ACUYE_UPDATER_PUBKEY: ${{ secrets.ACUYE_UPDATER_PUBKEY }}
+        run: |
+          configured=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').plugins.updater.pubkey" | tr -d '[:space:]')
+          provided=$(printf '%s' "$ACUYE_UPDATER_PUBKEY" | tr -d '[:space:]')
+          if [ -z "$provided" ]; then
+            echo "ACUYE_UPDATER_PUBKEY is empty; signed updates would be unverifiable" >&2
+            exit 1
+          fi
+          if [ "$configured" != "$provided" ]; then
+            echo "plugins.updater.pubkey in tauri.conf.json does not match ACUYE_UPDATER_PUBKEY" >&2
+            exit 1
+          fi
+
       - name: Validate and apply release version
         shell: bash
         run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"

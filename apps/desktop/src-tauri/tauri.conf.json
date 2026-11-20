@@ -38,6 +38,11 @@
     },
     "withGlobalTauri": false
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRjkzMEUxOTU1N0ZGMUMKUldRYy8xZVY0VEQ1K2pnNnZxdkNDczhFZDNiazdmRkYrb3pkWnNxdTJTM1lLb2M4MmdQNmU0a1YK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": [
