@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { QrScanner } from "@/components/QrScanner";
 import { Badge, Button, Input, Spinner } from "@/components/ui";
 import { useBackend } from "@/lib/backend-context";
-import type { LanIdentity, LanOffer, LanPairResult, LanPeer } from "@/lib/types";
+import type { LanIdentity, LanOffer, LanPairResult, LanPeer, LanSyncResult } from "@/lib/types";
 
 export function DevicesPage() {
   const backend = useBackend();
@@ -13,6 +13,7 @@ export function DevicesPage() {
   const [peers, setPeers] = useState<LanPeer[]>([]);
   const [offer, setOffer] = useState<LanOffer | null>(null);
   const [pairing, setPairing] = useState<LanPairResult | null>(null);
+  const [sync, setSync] = useState<LanSyncResult | null>(null);
   const [incoming, setIncoming] = useState("");
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -77,6 +78,43 @@ export function DevicesPage() {
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not pair with that device");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncWith = async (peer: LanPeer) => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await backend.lanSyncPeer(peer.id);
+      setSync(result);
+      setNotice(
+        `Synced with ${result.peerName}: ${result.merged} item${result.merged === 1 ? "" : "s"} merged, ${result.received} received, ${result.sent} sent. Code ${result.sas}.`,
+      );
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sync did not complete");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const acceptSync = async () => {
+    setBusy(true);
+    setError(null);
+    setNotice("Waiting for a paired device to start syncing…");
+    try {
+      const result = await backend.lanAcceptSync(180);
+      setSync(result);
+      setNotice(
+        `Synced with ${result.peerName}: ${result.merged} merged, ${result.received} received, ${result.sent} sent. Code ${result.sas}.`,
+      );
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sync did not complete");
+      setNotice(null);
     } finally {
       setBusy(false);
     }
@@ -153,9 +191,14 @@ export function DevicesPage() {
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
               Show a code here and scan it on the other PC, or paste the code it shows here.
             </p>
-            <Button size="sm" className="mt-3" disabled={busy} onClick={() => void showOffer()}>
-              <QrCode className="h-3.5 w-3.5" /> Show pairing code
-            </Button>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" disabled={busy} onClick={() => void showOffer()}>
+                <QrCode className="h-3.5 w-3.5" /> Show pairing code
+              </Button>
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => void acceptSync()}>
+                <Radio className="h-3.5 w-3.5" /> Accept a sync
+              </Button>
+            </div>
           </div>
         </section>
 
@@ -214,6 +257,19 @@ export function DevicesPage() {
           </p>
         ) : null}
         {error ? <p className="mt-3 text-[12px] text-danger">{error}</p> : null}
+        {sync ? (
+          <div className="mt-3 rounded-xl border border-border bg-surface p-3 text-[11.5px] text-muted-foreground">
+            <p className="text-[12px] font-medium text-foreground">Last sync with {sync.peerName}</p>
+            <p className="mt-1">
+              {sync.merged} merged · {sync.received} received · {sync.sent} sent · verification code{" "}
+              <span className="font-mono">{sync.sas}</span>
+            </p>
+            <p className="mt-1">
+              Only devices paired here, signed into the same account and able to prove the same vault
+              password can exchange items.
+            </p>
+          </div>
+        ) : null}
         {pairing ? (
           <div className="mt-3 rounded-xl border border-accent/40 bg-accent/5 p-3">
             <p className="text-[12px] font-medium">Verification code</p>
@@ -262,6 +318,14 @@ export function DevicesPage() {
                       {peer.platform} · last seen {new Date(peer.lastSeenAt * 1000).toLocaleString()}
                     </p>
                   </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy || peer.revoked}
+                    onClick={() => void syncWith(peer)}
+                  >
+                    Sync
+                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"

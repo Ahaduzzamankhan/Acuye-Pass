@@ -116,6 +116,8 @@ pub fn run() {
             advanced::lan_forget_peer,
             advanced::lan_test_peer,
             advanced::lan_answer_ping,
+            advanced::lan_sync_peer,
+            advanced::lan_accept_sync,
             // window chrome
             window::window_minimize,
             window::window_toggle_maximize,

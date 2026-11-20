@@ -43,6 +43,7 @@ import type {
   LanOffer,
   LanPairResult,
   LanPeer,
+  LanSyncResult,
   SecretAccessEntry,
   SecretAlert,
   TotpEntry,
@@ -762,6 +763,12 @@ export class DemoBackend implements Backend {
   async lanForgetPeer(): Promise<void> {}
   async lanTestPeer(): Promise<LanPairResult> {
     throw new BackendError("unsupported", "Pairing needs the desktop app");
+  }
+  async lanSyncPeer(): Promise<LanSyncResult> {
+    throw new BackendError("unsupported", "LAN sync needs the desktop app");
+  }
+  async lanAcceptSync(): Promise<LanSyncResult> {
+    throw new BackendError("unsupported", "LAN sync needs the desktop app");
   }
 
   async windowMinimize() {}

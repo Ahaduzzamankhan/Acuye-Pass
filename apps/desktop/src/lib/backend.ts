@@ -18,6 +18,7 @@ import type {
   LanOffer,
   LanPairResult,
   LanPeer,
+  LanSyncResult,
   ParsedImport,
   PassphraseOptions,
   PasswordOptions,
@@ -113,6 +114,8 @@ export interface Backend {
   lanRevokePeer(id: string, revoke: boolean): Promise<void>;
   lanForgetPeer(id: string): Promise<void>;
   lanTestPeer(id: string): Promise<LanPairResult>;
+  lanSyncPeer(id: string): Promise<LanSyncResult>;
+  lanAcceptSync(timeoutSecs: number): Promise<LanSyncResult>;
 
   windowMinimize(): Promise<void>;
   windowToggleMaximize(): Promise<boolean>;

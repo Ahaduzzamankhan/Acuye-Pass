@@ -1,11 +1,12 @@
 import { motion } from "motion/react";
 import { Lock, Search, ShieldCheck } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 
 import { useApp } from "@/lib/app-context";
 import { useBackend } from "@/lib/backend-context";
 import { cn } from "@/lib/utils";
+import { CommandPalette } from "./CommandPalette";
 import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
 import { Kbd, Tooltip } from "./ui";
@@ -14,6 +15,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const backend = useBackend();
   const { settings, session, counts, lock } = useApp();
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     if (!settings.shortcuts_enabled) return;
@@ -27,7 +29,7 @@ export function AppShell() {
           break;
         case "k":
           event.preventDefault();
-          window.dispatchEvent(new CustomEvent("acuye:focus-search"));
+          setPaletteOpen((open) => !open);
           break;
         case "n":
           event.preventDefault();
@@ -58,6 +60,7 @@ export function AppShell() {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <TitleBar />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       {backend.kind === "preview" ? (
         <div className="flex items-center justify-center gap-2 border-b border-warning/25 bg-warning/10 px-4 py-1 text-[11px] font-medium text-warning">
           Browser preview — demo data only, no encryption. Run the Windows desktop app for the real vault.
@@ -121,7 +124,7 @@ function StatusBar({
       {shortcuts ? (
         <>
           <span className="text-border">|</span>
-          <Tooltip content="Focus search">
+          <Tooltip content="Command palette">
             <span className="inline-flex items-center gap-1">
               <Search className="h-3 w-3" />
               <Kbd>Ctrl K</Kbd>

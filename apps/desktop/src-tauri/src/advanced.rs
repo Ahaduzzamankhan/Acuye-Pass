@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use acuye_core::{AcuyeError, Item, ItemFields, Timestamp};
 use acuye_lan::{
-    build_pairing_uri, handshake, parse_pairing_uri, Channel, DeviceIdentity, LanListener,
-    PairingOffer, PeerRecord, Role, TcpChannel, TrustStore,
+    build_pairing_uri, handshake, open_bundle, parse_pairing_uri, seal_bundle, vault_proof,
+    Channel, DeviceIdentity, LanListener, PairingOffer, PeerRecord, Role, SyncBundle, SyncItem,
+    TcpChannel, TrustStore, VaultIdentity,
 };
 use acuye_storage::LanPeerRow;
 use acuye_totp::{TotpAlgorithm, TotpConfig};
@@ -794,6 +795,295 @@ pub fn lan_test_peer(state: State<'_, AppState>, id: String) -> ApiResult<LanPai
         peer: peer_view(&peer_row_data),
         sas,
     })
+}
+
+// ---------------------------------------------------------------------------
+// LAN sync
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanSyncView {
+    pub peer_name: String,
+    /// Items the peer offered.
+    pub received: usize,
+    /// Items this device offered.
+    pub sent: usize,
+    /// Items merged into this vault (new or newer).
+    pub merged: usize,
+    pub sas: String,
+}
+
+/// Everything one side needs to run a sync round, read while the vault is
+/// unlocked and then used without holding the lock during network I/O.
+struct SyncContext {
+    identity_proof: String,
+    username: String,
+    vault_id: String,
+    vault_key: Vec<u8>,
+    bundle: SyncBundle,
+}
+
+fn sync_context(core: &mut crate::state::Core, handshake_hash: &[u8]) -> ApiResult<SyncContext> {
+    let (username, vault_id, vault_key) = {
+        let live = core.unlocked()?;
+        (
+            live.unlocked.username.clone(),
+            live.unlocked.vault.id.clone(),
+            live.unlocked.vault_key.to_vec(),
+        )
+    };
+    let proof = vault_proof(&vault_key, handshake_hash)?;
+    let stored = core.auth.db().load_items(&vault_id)?;
+    let bundle = SyncBundle {
+        items: stored
+            .into_iter()
+            .map(|item| SyncItem {
+                id: item.id,
+                updated_at: item.updated_at,
+                nonce: acuye_crypto::b64_encode(&item.nonce),
+                ciphertext: acuye_crypto::b64_encode(&item.ciphertext),
+            })
+            .collect(),
+    };
+    Ok(SyncContext {
+        identity_proof: proof,
+        username,
+        vault_id,
+        vault_key,
+        bundle,
+    })
+}
+
+/// Merge a peer bundle: newer items win, nothing is deleted, and the result is
+/// re-encrypted locally before it reaches the database.
+fn merge_bundle(
+    core: &mut crate::state::Core,
+    vault_id: &str,
+    bundle: SyncBundle,
+) -> ApiResult<usize> {
+    use std::collections::HashMap;
+
+    let key = core.unlocked()?.unlocked.vault_key.clone();
+    let mut local: HashMap<String, i64> = core
+        .auth
+        .db()
+        .load_items(vault_id)?
+        .into_iter()
+        .map(|item| (item.id, item.updated_at))
+        .collect();
+
+    let mut merged = 0usize;
+    for item in bundle.items {
+        if let Some(existing) = local.get(&item.id) {
+            if *existing >= item.updated_at {
+                continue;
+            }
+        }
+        let nonce = acuye_crypto::b64_decode(&item.nonce)?;
+        let ciphertext = acuye_crypto::b64_decode(&item.ciphertext)?;
+        if nonce.len() != acuye_storage::NONCE_LEN || ciphertext.is_empty() {
+            continue;
+        }
+        // Decrypt with the shared vault key before storing, so a payload that
+        // does not belong to this vault is dropped instead of persisted.
+        let sealed = acuye_crypto::Sealed {
+            nonce: nonce.clone(),
+            ciphertext: ciphertext.clone(),
+        };
+        let decrypted = match acuye_vault::codec::decrypt_item(&key, vault_id, &item.id, &sealed) {
+            Ok(decrypted) => decrypted,
+            Err(_) => continue,
+        };
+        core.auth.db().upsert_item(&acuye_storage::StoredItem {
+            id: item.id.clone(),
+            vault_id: vault_id.to_string(),
+            nonce,
+            ciphertext,
+            updated_at: item.updated_at,
+        })?;
+        let live = core.unlocked()?;
+        if live.unlocked.vault.get(&item.id).is_some() {
+            live.unlocked.vault.update(decrypted)?;
+        } else {
+            live.unlocked.vault.add(decrypted)?;
+        }
+        local.insert(item.id, item.updated_at);
+        merged += 1;
+    }
+    Ok(merged)
+}
+
+/// Exchange vaults with a paired device. The peer must be approved, signed into
+/// the same account, and able to prove it holds the same vault key — otherwise
+/// nothing is exchanged.
+#[tauri::command]
+pub fn lan_sync_peer(state: State<'_, AppState>, id: String) -> ApiResult<LanSyncView> {
+    let peer = {
+        let core = lock_core(&state)?;
+        core.auth
+            .db()
+            .lan_peers()?
+            .into_iter()
+            .find(|row| row.id == id)
+            .ok_or_else(|| ApiError::from(AcuyeError::NotFound("device".into())))?
+    };
+    if peer.revoked {
+        return Err(ApiError::validation("That device is revoked"));
+    }
+
+    let identity = {
+        let mut core = lock_core(&state)?;
+        let live = core.unlocked()?;
+        DeviceIdentity::from_vault_key(live.unlocked.vault_key.as_bytes())?
+    };
+    let mut channel = TcpChannel::connect(&peer.address, LAN_TIMEOUT)?;
+    let mut session = handshake(&identity, Role::Initiator, &mut channel)?;
+    let trusted = {
+        let core = lock_core(&state)?;
+        let store = trust_store(&core.auth.db().lan_peers()?);
+        store.approved_for_key(session.remote_static()).is_some()
+    };
+    if !trusted {
+        return Err(ApiError::validation(
+            "The device that answered is not the approved one",
+        ));
+    }
+    let sas = session.sas_code();
+
+    let (username, vault_id, vault_key, proof, bundle) = {
+        let mut core = lock_core(&state)?;
+        let context = sync_context(&mut core, session.handshake_hash())?;
+        (
+            context.username,
+            context.vault_id,
+            context.vault_key,
+            context.identity_proof,
+            context.bundle,
+        )
+    };
+    let sent = bundle.items.len();
+
+    let local_identity = VaultIdentity {
+        username: username.clone(),
+        vault_id: vault_id.clone(),
+        proof: proof.clone(),
+    };
+    let identity_payload = serde_json::to_vec(&local_identity).map_err(|_| ApiError::internal())?;
+    channel.send(&session.encrypt(&identity_payload)?)?;
+    let peer_identity: VaultIdentity =
+        serde_json::from_slice(&session.decrypt(&channel.receive()?)?)
+            .map_err(|_| ApiError::validation("Invalid sync greeting"))?;
+    peer_identity.verify_against(&username, &vault_id, &proof)?;
+
+    channel.send(&session.encrypt(&seal_bundle(&vault_key, &vault_id, &bundle)?)?)?;
+    let remote_payload = session.decrypt(&channel.receive()?)?;
+    let remote_bundle = open_bundle(&vault_key, &vault_id, &remote_payload)?;
+    let received = remote_bundle.items.len();
+    let merged = {
+        let mut core = lock_core(&state)?;
+        merge_bundle(&mut core, &vault_id, remote_bundle)?
+    };
+    let mut vault_key = vault_key;
+    vault_key.zeroize();
+
+    Ok(LanSyncView {
+        peer_name: peer.name,
+        received,
+        sent,
+        merged,
+        sas,
+    })
+}
+
+/// Accept one incoming sync from an approved device.
+#[tauri::command]
+pub fn lan_accept_sync(state: State<'_, AppState>, timeout_secs: u64) -> ApiResult<LanSyncView> {
+    let identity = {
+        let mut core = lock_core(&state)?;
+        let live = core.unlocked()?;
+        DeviceIdentity::from_vault_key(live.unlocked.vault_key.as_bytes())?
+    };
+    let timeout = Duration::from_secs(timeout_secs.clamp(5, 600));
+    let listener = LanListener::bind(LAN_PORT)?;
+    let mut channel = listener.accept(timeout)?;
+    let mut session = handshake(&identity, Role::Responder, &mut channel)?;
+    let trusted = {
+        let mut core = lock_core(&state)?;
+        let rows = core.auth.db().lan_peers()?;
+        let store = trust_store(&rows);
+        store
+            .approved_for_key(session.remote_static())
+            .map(|peer| peer.name.clone())
+    };
+    let Some(peer_name) = trusted else {
+        return Err(ApiError::validation(
+            "That device is not paired with this vault",
+        ));
+    };
+    let sas = session.sas_code();
+
+    let (username, vault_id, vault_key, proof, bundle) = {
+        let mut core = lock_core(&state)?;
+        let context = sync_context(&mut core, session.handshake_hash())?;
+        (
+            context.username,
+            context.vault_id,
+            context.vault_key,
+            context.identity_proof,
+            context.bundle,
+        )
+    };
+    let sent = bundle.items.len();
+
+    let peer_identity: VaultIdentity =
+        serde_json::from_slice(&session.decrypt(&channel.receive()?)?)
+            .map_err(|_| ApiError::validation("Invalid sync greeting"))?;
+    peer_identity.verify_against(&username, &vault_id, &proof)?;
+    let local_identity = VaultIdentity {
+        username: username.clone(),
+        vault_id: vault_id.clone(),
+        proof,
+    };
+    let identity_payload = serde_json::to_vec(&local_identity).map_err(|_| ApiError::internal())?;
+    channel.send(&session.encrypt(&identity_payload)?)?;
+
+    let remote_payload = session.decrypt(&channel.receive()?)?;
+    let remote_bundle = open_bundle(&vault_key, &vault_id, &remote_payload)?;
+    let received = remote_bundle.items.len();
+    let merged = {
+        let mut core = lock_core(&state)?;
+        merge_bundle(&mut core, &vault_id, remote_bundle)?
+    };
+    channel.send(&session.encrypt(&seal_bundle(&vault_key, &vault_id, &bundle)?)?)?;
+    let mut vault_key = vault_key;
+    vault_key.zeroize();
+
+    Ok(LanSyncView {
+        peer_name,
+        received,
+        sent,
+        merged,
+        sas,
+    })
+}
+
+fn trust_store(rows: &[LanPeerRow]) -> TrustStore {
+    TrustStore::new(
+        rows.iter()
+            .map(|row| PeerRecord {
+                id: row.id.clone(),
+                name: row.name.clone(),
+                platform: row.platform.clone(),
+                signing_key: row.signing_key.clone(),
+                exchange_key: row.exchange_key.clone(),
+                address: row.address.clone(),
+                paired_at: row.paired_at,
+                last_seen_at: row.last_seen_at,
+                revoked: row.revoked,
+            })
+            .collect(),
+    )
 }
 
 /// Answer an authenticated LAN ping. Used by the receiving device while

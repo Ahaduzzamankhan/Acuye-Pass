@@ -21,6 +21,7 @@ use std::time::Duration;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
+use hmac::Mac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use snow::params::NoiseParams;
@@ -243,6 +244,130 @@ pub fn parse_pairing_uri(uri: &str, now: i64) -> Result<PairingOffer> {
     Ok(offer)
 }
 
+/// Proof that a device holds the same vault key, bound to one handshake.
+///
+/// Two devices can only produce the same value when they share the vault key,
+/// which in practice means the same vault (and therefore the same master
+/// password at the time the vault was created or restored). Mixing in the
+/// handshake hash stops a proof captured from one session being replayed in
+/// another.
+pub fn vault_proof(vault_key: &[u8], handshake_hash: &[u8]) -> Result<String> {
+    if vault_key.len() != 32 {
+        return Err(AcuyeError::Validation(
+            "The vault key is not available".into(),
+        ));
+    }
+    let hkdf = Hkdf::<Sha256>::new(Some(b"acuye-lan-sync-auth-v1"), vault_key);
+    let mut key = [0u8; 32];
+    hkdf.expand(b"acuye-lan-sync-proof", &mut key)
+        .map_err(|_| AcuyeError::Internal)?;
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(&key).map_err(|_| AcuyeError::Internal)?;
+    key.zeroize();
+    mac.update(b"acuye-lan-sync-v1");
+    mac.update(handshake_hash);
+    let digest = mac.finalize().into_bytes();
+    Ok(digest[..16].iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Constant-time comparison of two proofs.
+pub fn proofs_match(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.as_bytes().iter().zip(b.as_bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Account names match when they normalise to the same value.
+pub fn usernames_match(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase() && !a.trim().is_empty()
+}
+
+/// What a device tells its peer before any vault data is exchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultIdentity {
+    pub username: String,
+    pub vault_id: String,
+    pub proof: String,
+}
+
+impl VaultIdentity {
+    /// Check that the peer is the same account on the same vault.
+    pub fn verify_against(&self, username: &str, vault_id: &str, proof: &str) -> Result<()> {
+        if !usernames_match(&self.username, username) {
+            return Err(AcuyeError::Validation(
+                "The other device is signed into a different account".into(),
+            ));
+        }
+        if self.vault_id != vault_id {
+            return Err(AcuyeError::Validation(
+                "The other device holds a different vault — sync needs the same vault".into(),
+            ));
+        }
+        if !proofs_match(&self.proof, proof) {
+            return Err(AcuyeError::Validation(
+                "The other device failed the vault password check".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One item travelling between two devices. Nonce and ciphertext are exactly
+/// what the database holds, so only ciphertext ever crosses the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncItem {
+    pub id: String,
+    pub updated_at: i64,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+/// Everything one device offers its peer in a single sync round.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncBundle {
+    pub items: Vec<SyncItem>,
+}
+
+/// Seal a sync bundle with the vault key, so even inside the Noise tunnel the
+/// payload is ciphertext that only a device with the same vault can open.
+pub fn seal_bundle(vault_key: &[u8], vault_id: &str, bundle: &SyncBundle) -> Result<Vec<u8>> {
+    let key = vault_key_array(vault_key)?;
+    let plaintext = serde_json::to_vec(bundle)?;
+    let sealed = acuye_crypto::seal(&key, &bundle_aad(vault_id), &plaintext)?;
+    let mut out = sealed.nonce;
+    out.extend_from_slice(&sealed.ciphertext);
+    Ok(out)
+}
+
+/// Open a sealed bundle. Fails closed on a different vault or tampering.
+pub fn open_bundle(vault_key: &[u8], vault_id: &str, payload: &[u8]) -> Result<SyncBundle> {
+    if payload.len() <= acuye_crypto::NONCE_LEN {
+        return Err(AcuyeError::Format);
+    }
+    let key = vault_key_array(vault_key)?;
+    let sealed = acuye_crypto::Sealed {
+        nonce: payload[..acuye_crypto::NONCE_LEN].to_vec(),
+        ciphertext: payload[acuye_crypto::NONCE_LEN..].to_vec(),
+    };
+    let plaintext = acuye_crypto::open(&key, &bundle_aad(vault_id), &sealed)?;
+    serde_json::from_slice(&plaintext).map_err(|_| AcuyeError::Format)
+}
+
+fn vault_key_array(vault_key: &[u8]) -> Result<acuye_crypto::SecretKey> {
+    let bytes: [u8; 32] = vault_key
+        .try_into()
+        .map_err(|_| AcuyeError::Validation("The vault key is not available".into()))?;
+    Ok(acuye_crypto::SecretKey::from_bytes(bytes))
+}
+
+fn bundle_aad(vault_id: &str) -> Vec<u8> {
+    format!("acuye-lan-sync-v1|{vault_id}").into_bytes()
+}
+
 /// A peer this device has approved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRecord {
@@ -377,6 +502,11 @@ impl Session {
     /// The peer's static X25519 key, to be checked against the trust store.
     pub fn remote_static(&self) -> &[u8] {
         &self.remote_static
+    }
+
+    /// Transcript hash, used to bind a vault proof to this one session.
+    pub fn handshake_hash(&self) -> &[u8] {
+        &self.handshake_hash
     }
 
     /// Six-digit code both devices display; equal codes mean no MITM.
@@ -615,6 +745,60 @@ mod tests {
 
         assert!(parse_pairing_uri("https://example.com", now).is_err());
         assert!(parse_pairing_uri("acuye-lan://pair/not-a-code", now).is_err());
+    }
+
+    #[test]
+    fn vault_proof_requires_the_same_vault_key_and_session() {
+        let key = [7u8; 32];
+        let other = [8u8; 32];
+        let hash = [1u8; 32];
+        let a = vault_proof(&key, &hash).unwrap();
+        assert_eq!(a, vault_proof(&key, &hash).unwrap());
+        assert_ne!(a, vault_proof(&other, &hash).unwrap());
+        assert_ne!(a, vault_proof(&key, &[2u8; 32]).unwrap());
+        assert!(proofs_match(&a, &vault_proof(&key, &hash).unwrap()));
+        assert!(!proofs_match(&a, &vault_proof(&other, &hash).unwrap()));
+        assert!(vault_proof(b"short", &hash).is_err());
+    }
+
+    #[test]
+    fn identity_verification_rejects_other_accounts_vaults_and_proofs() {
+        let key = [3u8; 32];
+        let hash = [4u8; 32];
+        let proof = vault_proof(&key, &hash).unwrap();
+        let identity = VaultIdentity {
+            username: "Ada".into(),
+            vault_id: "vault-1".into(),
+            proof: proof.clone(),
+        };
+        assert!(identity.verify_against("ada", "vault-1", &proof).is_ok());
+        assert!(identity.verify_against("bob", "vault-1", &proof).is_err());
+        assert!(identity.verify_against("ada", "vault-2", &proof).is_err());
+        let wrong = vault_proof(&[9u8; 32], &hash).unwrap();
+        assert!(identity.verify_against("ada", "vault-1", &wrong).is_err());
+    }
+
+    #[test]
+    fn sync_bundles_are_sealed_with_the_vault_key() {
+        let key = [5u8; 32];
+        let bundle = SyncBundle {
+            items: vec![SyncItem {
+                id: "item-1".into(),
+                updated_at: 42,
+                nonce: b64(&[1u8; 24]),
+                ciphertext: b64(b"ciphertext"),
+            }],
+        };
+        let sealed = seal_bundle(&key, "vault-1", &bundle).unwrap();
+        assert!(!sealed.windows(10).any(|w| w == b"ciphertext"));
+        assert_eq!(open_bundle(&key, "vault-1", &sealed).unwrap(), bundle);
+        // A different vault, key or tampered payload cannot open it.
+        assert!(open_bundle(&[6u8; 32], "vault-1", &sealed).is_err());
+        assert!(open_bundle(&key, "vault-2", &sealed).is_err());
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        assert!(open_bundle(&key, "vault-1", &tampered).is_err());
     }
 
     #[test]

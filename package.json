@@ -1,7 +1,7 @@
 {
   "name": "acuye-pass",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "MIT",
   "description": "Acuye Pass — a privacy-focused, local-first password manager by Fluxenite",
   "repository": {

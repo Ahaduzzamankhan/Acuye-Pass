@@ -537,3 +537,11 @@ export interface LanPairResult {
   peer: LanPeer;
   sas: string;
 }
+
+export interface LanSyncResult {
+  peerName: string;
+  received: number;
+  sent: number;
+  merged: number;
+  sas: string;
+}

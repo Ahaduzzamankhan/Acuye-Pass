@@ -1,6 +1,6 @@
 [package]
 name = "acuye-pass"
-version = "0.1.2"
+version = "0.1.3"
 description = "Acuye Pass — privacy-focused password manager by Fluxenite"
 edition = "2021"
 rust-version = "1.84"

@@ -24,6 +24,7 @@ import type {
   LanOffer,
   LanPairResult,
   LanPeer,
+  LanSyncResult,
   SecretAccessEntry,
   SecretAlert,
   TotpEntry,
@@ -278,6 +279,12 @@ export class TauriBackend implements Backend {
   }
   lanTestPeer(id: string) {
     return call<LanPairResult>("lan_test_peer", { id });
+  }
+  lanSyncPeer(id: string) {
+    return call<LanSyncResult>("lan_sync_peer", { id });
+  }
+  lanAcceptSync(timeoutSecs: number) {
+    return call<LanSyncResult>("lan_accept_sync", { timeoutSecs });
   }
 
   windowMinimize() {

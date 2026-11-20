@@ -168,6 +168,13 @@ fn channel_accepts(version: &Version, channel: ReleaseChannel) -> bool {
     }
 }
 
+fn compact_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// A Windows installer asset produced by the Tauri bundle step.
 fn is_windows_installer(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -178,9 +185,13 @@ fn is_windows_installer(name: &str) -> bool {
         return false;
     }
     let has_platform = lower.contains("x64") || lower.contains("x86_64");
+    // Tauri writes `Acuye.Pass_0.1.2_x64-setup.exe`, so compare a punctuation
+    // free form of the name against the product name instead of a literal
+    // prefix; otherwise no release ever looks newer than the installed build.
+    let compact = compact_name(name);
     let has_prefix = ASSET_NAME_PREFIXES
         .iter()
-        .any(|prefix| name.starts_with(prefix));
+        .any(|prefix| compact.starts_with(&compact_name(prefix)));
     has_platform && has_prefix
 }
 
@@ -761,6 +772,38 @@ mod tests {
         assert!(public_key_text("").is_err());
         assert!(public_key_text("   ").is_err());
         assert!(public_key_text("not-base64").is_err());
+    }
+
+    #[test]
+    fn tauri_installer_names_are_recognised() {
+        // Names exactly as the release workflow publishes them.
+        assert!(is_windows_installer("Acuye.Pass_0.1.2_x64-setup.exe"));
+        assert!(is_windows_installer("Acuye.Pass_0.1.2_x64_en-US.msi"));
+        assert!(is_windows_installer("Acuye Pass_0.1.2_x64-setup.exe"));
+        assert!(is_windows_installer("acuye-pass_1.0.0_x64-setup.exe"));
+        // Still refuses anything that is not our installer.
+        assert!(!is_windows_installer("Acuye.Pass_0.1.2_x64-setup.exe.sig"));
+        assert!(!is_windows_installer("evil_x64-setup.exe"));
+        assert!(!is_windows_installer("Acuye.Pass_0.1.2_arm64-setup.exe"));
+        assert!(!is_windows_installer(
+            "Acuye.Pass_x64-setup.exe/../evil.exe"
+        ));
+    }
+
+    #[test]
+    fn release_assets_produce_an_update_candidate() {
+        let names = vec![
+            "Acuye.Pass_1.2.0_x64-setup.exe".to_string(),
+            "Acuye.Pass_1.2.0_x64-setup.exe.sig".to_string(),
+            "Acuye.Pass_1.2.0_x64_en-US.msi".to_string(),
+            "Acuye.Pass_1.2.0_x64_en-US.msi.sig".to_string(),
+        ];
+        let json = releases_json(vec![release("v1.2.0", false, &names)]);
+        let candidate = select_update(&json, "0.1.2", ReleaseChannel::Stable)
+            .unwrap()
+            .expect("a published release must yield a candidate");
+        assert_eq!(candidate.version, "1.2.0");
+        assert_eq!(candidate.asset.name, "Acuye.Pass_1.2.0_x64-setup.exe");
     }
 
     #[test]

@@ -293,7 +293,7 @@ function PreferencesSection() {
             onCheckedChange={(checked) => void saveSettings({ favicon_enabled: checked })}
           />
         </Row>
-        <Row title="Keyboard shortcuts" description="Ctrl+K, Ctrl+N, Ctrl+L, Ctrl+G and Ctrl+," className="border-t border-border/70">
+        <Row title="Keyboard shortcuts" description="Ctrl+K opens the command palette; Ctrl+N, Ctrl+L, Ctrl+G and Ctrl+," className="border-t border-border/70">
           <Switch
             id="shortcuts-enabled"
             checked={settings.shortcuts_enabled}
