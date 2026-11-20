@@ -464,14 +464,46 @@ fn signature_text(raw: &str) -> Result<String> {
     Ok(text)
 }
 
-/// Verify a Tauri-compatible minisign signature over the installer bytes.
-pub fn verify_minisign(public_key_base64: &str, signature: &str, artifact: &[u8]) -> Result<()> {
-    if public_key_base64.trim().is_empty() {
+/// Normalise an updater public key to the single key line minisign expects.
+///
+/// Tauri's `plugins.updater.pubkey` and the `ACUYE_UPDATER_PUBKEY` build value
+/// carry the whole public-key file base64-encoded, while minisign's parser
+/// wants only the key line. Accept the blob, the key-file text and the bare
+/// key line, so the key can be injected in whichever form the pipeline has.
+fn public_key_text(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
         return Err(AcuyeError::Update(
             "updater signing is not configured for this build".into(),
         ));
     }
-    let key = minisign_verify::PublicKey::from_base64(public_key_base64.trim())
+    let text = if trimmed.contains("untrusted comment:") {
+        trimmed.to_string()
+    } else {
+        match acuye_crypto::b64_decode(trimmed)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        {
+            Some(decoded) if decoded.contains("untrusted comment:") => decoded,
+            _ => trimmed.to_string(),
+        }
+    };
+    let key_line = text
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty() && !line.starts_with("untrusted comment:"))
+        .ok_or_else(|| AcuyeError::Update("invalid updater public key".into()))?;
+    // A minisign public key is 42 raw bytes: algorithm, key id and ed25519 key.
+    match acuye_crypto::b64_decode(key_line) {
+        Ok(raw) if raw.len() == 42 => Ok(key_line.to_string()),
+        _ => Err(AcuyeError::Update("invalid updater public key".into())),
+    }
+}
+
+/// Verify a Tauri-compatible minisign signature over the installer bytes.
+pub fn verify_minisign(public_key_base64: &str, signature: &str, artifact: &[u8]) -> Result<()> {
+    let key_line = public_key_text(public_key_base64)?;
+    let key = minisign_verify::PublicKey::from_base64(&key_line)
         .map_err(|_| AcuyeError::Update("invalid updater public key".into()))?;
     let text = signature_text(signature)?;
     let parsed = minisign_verify::Signature::decode(&text)
@@ -713,6 +745,22 @@ mod tests {
         assert!(ensure_upgrade("2.0.0", &candidate).is_err());
         assert!(ensure_upgrade("1.1.0", &candidate).is_err());
         assert!(ensure_upgrade("1.0.0", &candidate).is_ok());
+    }
+
+    #[test]
+    fn updater_public_key_accepts_both_published_formats() {
+        // The project's own public key, which the Tauri config and the release
+        // secret carry as the base64 of the key file.
+        const BLOB: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRjkzMEUxOTU1N0ZGMUMKUldRYy8xZVY0VEQ1K2pnNnZxdkNDczhFZDNiazdmRkYrb3pkWnNxdTJTM1lLb2M4MmdQNmU0a1YK";
+        const KEY_LINE: &str = "RWQc/1eV4TD5+jg6vqvCCs8Ed3bk7fFF+ozdZsqu2S3YKoc82gP6e4kV";
+        let file_text = String::from_utf8(acuye_crypto::b64_decode(BLOB).unwrap()).unwrap();
+        assert_eq!(public_key_text(BLOB).unwrap(), KEY_LINE);
+        assert_eq!(public_key_text(KEY_LINE).unwrap(), KEY_LINE);
+        assert_eq!(public_key_text(&file_text).unwrap(), KEY_LINE);
+        assert_eq!(public_key_text(&format!("  {BLOB}\n")).unwrap(), KEY_LINE);
+        assert!(public_key_text("").is_err());
+        assert!(public_key_text("   ").is_err());
+        assert!(public_key_text("not-base64").is_err());
     }
 
     #[test]
