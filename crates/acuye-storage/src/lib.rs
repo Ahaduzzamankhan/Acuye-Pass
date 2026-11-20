@@ -16,6 +16,9 @@ use acuye_core::{AccountRecord, AcuyeError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 const SCHEMA_VERSION: i32 = 2;
+/// XChaCha20-Poly1305 nonce length. Rows must match exactly; a longer nonce can
+/// never be opened and would only surface as a failed unlock.
+pub const NONCE_LEN: usize = 24;
 
 fn storage_err(_err: rusqlite::Error) -> AcuyeError {
     // Do not forward driver messages: they may include SQL fragments.
@@ -107,6 +110,13 @@ pub struct DeviceRecord {
     pub revoked: bool,
     pub sync_registered: bool,
 }
+
+/// One `sync_state` row: vault id, local revision, remote revision, last sync
+/// timestamp and the configured provider endpoint.
+pub type SyncStateRow = (String, i64, i64, Option<i64>, Option<String>);
+
+/// One `sync_outbox` row: revision, item id, operation and queue timestamp.
+pub type SyncOutboxRow = (i64, String, String, i64);
 
 /// Handle to the local encrypted database.
 pub struct Database {
@@ -318,7 +328,7 @@ impl Database {
     }
 
     pub fn upsert_item(&self, item: &StoredItem) -> Result<()> {
-        if item.nonce.len() < 24 || item.ciphertext.is_empty() {
+        if item.nonce.len() != NONCE_LEN || item.ciphertext.is_empty() {
             return Err(AcuyeError::Validation("invalid encrypted item".into()));
         }
         self.conn
@@ -339,6 +349,40 @@ impl Database {
                 ],
             )
             .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Persist a batch of items in one transaction. Used by bulk import so a
+    /// failure cannot leave half the batch on disk.
+    pub fn upsert_items(&mut self, items: &[StoredItem]) -> Result<()> {
+        let tx = self.conn.transaction().map_err(storage_err)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO items (id, vault_id, nonce, ciphertext, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(id) DO UPDATE SET
+                        vault_id = excluded.vault_id,
+                        nonce = excluded.nonce,
+                        ciphertext = excluded.ciphertext,
+                        updated_at = excluded.updated_at",
+                )
+                .map_err(storage_err)?;
+            for item in items {
+                if item.nonce.len() != NONCE_LEN || item.ciphertext.is_empty() {
+                    return Err(AcuyeError::Validation("invalid encrypted item".into()));
+                }
+                stmt.execute(params![
+                    item.id,
+                    item.vault_id,
+                    item.nonce,
+                    item.ciphertext,
+                    item.updated_at
+                ])
+                .map_err(storage_err)?;
+            }
+        }
+        tx.commit().map_err(storage_err)?;
         Ok(())
     }
 
@@ -501,6 +545,57 @@ impl Database {
         Ok(out)
     }
 
+    // ----- sync bookkeeping ------------------------------------------------
+
+    /// Raw `sync_state` rows, used when restoring a backup.
+    pub fn sync_state_rows(&self) -> Result<Vec<SyncStateRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT vault_id, local_revision, remote_revision, last_synced_at,
+                        provider_endpoint
+                 FROM sync_state ORDER BY vault_id",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Raw `sync_outbox` rows, used when restoring a backup.
+    pub fn sync_outbox_rows(&self) -> Result<Vec<SyncOutboxRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT revision, item_id, operation, queued_at
+                 FROM sync_outbox ORDER BY revision",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
     pub fn revoke_device(&self, id: &str) -> Result<()> {
         let changed = self
             .conn
@@ -548,12 +643,23 @@ impl Database {
             .ok_or_else(|| AcuyeError::Storage("backup has no account".into()))?;
         let items = source_db.load_items(&account.vault_id)?;
         let settings = source_db.settings_map()?;
+        // The device list and sync bookkeeping describe this vault too, so the
+        // restore would otherwise mix a stale device registry (including
+        // revoked entries) with the restored account.
+        let devices = source_db.list_devices()?;
+        let sync_state = source_db.sync_state_rows()?;
+        let sync_outbox = source_db.sync_outbox_rows()?;
 
         let tx = self.conn.transaction().map_err(storage_err)?;
         tx.execute("DELETE FROM items", []).map_err(storage_err)?;
         tx.execute("DELETE FROM accounts", [])
             .map_err(storage_err)?;
         tx.execute("DELETE FROM settings", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM devices", []).map_err(storage_err)?;
+        tx.execute("DELETE FROM sync_state", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM sync_outbox", [])
             .map_err(storage_err)?;
         tx.execute(
             "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
@@ -603,6 +709,52 @@ impl Database {
                 stmt.execute(params![key, value]).map_err(storage_err)?;
             }
         }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO devices (id, name, platform, created_at, last_seen_at,
+                        revoked, sync_registered)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                )
+                .map_err(storage_err)?;
+            for device in &devices {
+                stmt.execute(params![
+                    device.id,
+                    device.name,
+                    device.platform,
+                    device.created_at,
+                    device.last_seen_at,
+                    device.revoked as i32,
+                    device.sync_registered as i32,
+                ])
+                .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO sync_state (vault_id, local_revision, remote_revision,
+                        last_synced_at, provider_endpoint)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(storage_err)?;
+            for (vault_id, local, remote, last, endpoint) in &sync_state {
+                stmt.execute(params![vault_id, local, remote, last, endpoint])
+                    .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO sync_outbox (revision, item_id, operation, queued_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(storage_err)?;
+            for (revision, item_id, operation, queued_at) in &sync_outbox {
+                stmt.execute(params![revision, item_id, operation, queued_at])
+                    .map_err(storage_err)?;
+            }
+        }
         tx.commit().map_err(storage_err)?;
         Ok(())
     }
@@ -640,18 +792,34 @@ impl Database {
         let path_str = destination
             .to_str()
             .ok_or_else(|| AcuyeError::Validation("invalid backup path".into()))?;
-        self.conn
+        if self
+            .conn
             .execute("VACUUM INTO ?1", params![path_str])
-            .map_err(storage_err)?;
-
-        let check = Connection::open(destination).map_err(storage_err)?;
-        let ok: String = check
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))
-            .map_err(storage_err)?;
-        if ok != "ok" {
-            return Err(AcuyeError::Storage("backup verification failed".into()));
+            .is_err()
+        {
+            let _ = fs::remove_file(destination);
+            return Err(AcuyeError::Storage(
+                "the backup could not be written".into(),
+            ));
         }
-        Ok(())
+
+        // A copy that fails verification must not stay on disk: its name would
+        // collide with the next attempt and "already exists" would hide the
+        // real problem forever.
+        let verified = (|| -> Result<()> {
+            let check = Connection::open(destination).map_err(storage_err)?;
+            let ok: String = check
+                .query_row("PRAGMA quick_check", [], |row| row.get(0))
+                .map_err(storage_err)?;
+            if ok != "ok" {
+                return Err(AcuyeError::Storage("backup verification failed".into()));
+            }
+            Ok(())
+        })();
+        if verified.is_err() {
+            let _ = fs::remove_file(destination);
+        }
+        verified
     }
 }
 

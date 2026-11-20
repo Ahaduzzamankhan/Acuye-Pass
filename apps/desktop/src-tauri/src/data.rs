@@ -1,7 +1,7 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use acuye_core::{AcuyeError, Item};
+use acuye_core::Item;
 use acuye_export::{self, EncryptedExportEnvelope};
 use acuye_import::{ImportFormat, ParsedImport};
 use serde::Serialize;
@@ -9,7 +9,7 @@ use tauri::{AppHandle, State};
 
 use crate::commands::{lock_core, reload_settings};
 use crate::error::{ApiError, ApiResult};
-use crate::state::{cache_key, AppState};
+use crate::state::{cache_key, reload_device_identity, AppState};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,10 +62,6 @@ fn file_created_at(path: &Path) -> i64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn conv_error(_: AcuyeError) -> ApiError {
-    ApiError::internal()
 }
 
 #[tauri::command]
@@ -139,6 +135,9 @@ pub fn restore_backup(state: State<'_, AppState>, name: String) -> ApiResult<()>
     core.session = None;
     core.auth.db_mut().replace_with_backup(&path)?;
     reload_settings(&mut core)?;
+    // The restored vault carries its own device registry and device id, so the
+    // in-memory identity has to follow instead of pointing at the old vault.
+    reload_device_identity(&mut core)?;
     Ok(())
 }
 
@@ -194,20 +193,34 @@ pub fn import_apply(
         });
     }
     let mut renamed = 0usize;
-    let mut persisted = Vec::new();
-    {
+    // Prepare the whole batch first: resolve id collisions, validate, encrypt.
+    // Nothing is written until every item is ready, and the in-memory vault is
+    // only updated after the batch is durable, so a failure cannot leave the
+    // two out of step.
+    let (prepared, persisted) = {
         let live = core.unlocked()?;
+        let mut prepared = Vec::with_capacity(items.len());
+        let mut persisted = Vec::with_capacity(items.len());
+        let mut accepted: Vec<String> = Vec::with_capacity(items.len());
         for mut item in items {
-            if live.unlocked.vault.get(&item.id).is_some() {
+            while live.unlocked.vault.get(&item.id).is_some() || accepted.contains(&item.id) {
                 item.id = acuye_crypto::b64_encode(&acuye_crypto::random_bytes(16));
                 renamed += 1;
             }
-            let item = live.unlocked.vault.add(item)?;
+            item.normalize();
+            item.validate()?;
+            accepted.push(item.id.clone());
             persisted.push(live.unlocked.encrypt_item(&item)?);
+            prepared.push(item);
         }
-    }
-    for stored in &persisted {
-        core.auth.db().upsert_item(stored)?;
+        (prepared, persisted)
+    };
+    core.auth.db_mut().upsert_items(&persisted)?;
+    {
+        let live = core.unlocked()?;
+        for item in prepared {
+            live.unlocked.vault.add(item)?;
+        }
     }
     let _ = format;
     Ok(ImportResult {
@@ -330,12 +343,4 @@ fn data_url(mime: &str, bytes: &[u8]) -> String {
         mime,
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
-}
-
-/// Resolve a path inside the export folder, for "reveal" actions.
-pub fn export_path(core: &crate::state::Core, name: &str) -> Option<PathBuf> {
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return None;
-    }
-    Some(core.paths.exports.join(name))
 }

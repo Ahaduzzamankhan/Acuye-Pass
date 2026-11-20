@@ -9,7 +9,8 @@
 //! No third-party favicon service is ever contacted.
 
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
 
 use acuye_core::{AcuyeError, Result};
@@ -101,7 +102,8 @@ pub fn validate_external_url(url: &str) -> Result<String> {
     }
     let host = match authority.rsplit_once(':') {
         Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
-            if port.len() > 5 || port.parse::<u32>().map(|p| p == 0).unwrap_or(true) {
+            let parsed = port.parse::<u32>().unwrap_or(0);
+            if port.len() > 5 || parsed == 0 || parsed > 65_535 {
                 return Err(AcuyeError::Validation("Invalid port".into()));
             }
             host
@@ -143,8 +145,11 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_ipv4(v4),
         IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_public_ipv4(mapped);
+            // `to_ipv4` covers both the IPv4-mapped form (`::ffff:a.b.c.d`) and
+            // the deprecated IPv4-compatible form (`::a.b.c.d`); some stacks
+            // still route the latter to the IPv4 destination.
+            if let Some(v4) = v6.to_ipv4() {
+                return is_public_ipv4(v4);
             }
             !(v6.is_loopback()
                 || v6.is_unspecified()
@@ -204,28 +209,31 @@ fn parse_https_target(url: &str) -> Result<(String, String)> {
     Ok((host, path.to_string()))
 }
 
-/// Resolve the host and reject the request if any resolved address is not
+/// Resolve the host once and reject the request if any resolved address is not
 /// publicly routable. This blocks `169.254.169.254`, RFC1918 targets and
 /// DNS names that point at loopback.
-fn assert_public_host(host: &str) -> Result<()> {
-    let addrs = (host, 443u16)
+///
+/// The validated addresses are returned so the HTTP client can be pinned to
+/// them: resolving a second time would let a rebinding DNS answer pass the
+/// check with a public address and then connect to a private one.
+fn resolve_public_host(host: &str, port: u16) -> Result<Vec<SocketAddr>> {
+    let addrs: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
-        .map_err(|_| AcuyeError::Network("Could not resolve the website host".into()))?;
-    let mut any = false;
-    for addr in addrs {
-        any = true;
+        .map_err(|_| AcuyeError::Network("Could not resolve the website host".into()))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(AcuyeError::Network(
+            "Could not resolve the website host".into(),
+        ));
+    }
+    for addr in &addrs {
         if !is_public_ip(addr.ip()) {
             return Err(AcuyeError::Validation(
                 "The website host resolves to a private address".into(),
             ));
         }
     }
-    if !any {
-        return Err(AcuyeError::Network(
-            "Could not resolve the website host".into(),
-        ));
-    }
-    Ok(())
+    Ok(addrs)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -276,11 +284,15 @@ fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
 /// private address or an unexpected domain.
 pub fn fetch_favicon(website_url: &str) -> Result<Favicon> {
     let (host, _path) = parse_https_target(website_url)?;
-    assert_public_host(&host)?;
+    let pinned = Arc::new(resolve_public_host(&host, 443)?);
 
+    let resolved = pinned.clone();
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(FAVICON_TIMEOUT_SECS))
         .redirects(0)
+        // Connect only to the addresses that were just validated. TLS still
+        // verifies the certificate against the host name.
+        .resolver(move |_netloc: &str| Ok(resolved.as_slice().to_vec()))
         .build();
     let url = format!("https://{host}/favicon.ico");
     let response = agent
@@ -343,6 +355,15 @@ mod tests {
     }
 
     #[test]
+    fn ports_must_be_in_range() {
+        assert!(validate_external_url("https://example.com:8443/login").is_ok());
+        assert!(validate_external_url("https://example.com:65535").is_ok());
+        assert!(validate_external_url("https://example.com:65536").is_err());
+        assert!(validate_external_url("https://example.com:99999").is_err());
+        assert!(validate_external_url("https://example.com:0").is_err());
+    }
+
+    #[test]
     fn website_normalization_adds_scheme() {
         assert_eq!(
             normalize_website("example.com/login").unwrap(),
@@ -365,6 +386,10 @@ mod tests {
             "::1",
             "fc00::1",
             "fe80::1",
+            "::ffff:127.0.0.1",
+            "::127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::169.254.169.254",
         ] {
             assert!(!is_public_ip(ip.parse().unwrap()), "{ip} must be private");
         }

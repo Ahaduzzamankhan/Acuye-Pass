@@ -371,11 +371,20 @@ pub fn copy_field(
 
     if clear_after > 0 {
         let handle = app.clone();
+        let secret = value;
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(clear_after));
-            // Clear unconditionally after the timeout so a copied secret does
-            // not linger in clipboard history.
-            let _ = handle.clipboard().write_text(String::new());
+            // Only clear when the clipboard still holds what this command put
+            // there: wiping whatever the user copied in the meantime would
+            // destroy their data.
+            let still_ours = handle
+                .clipboard()
+                .read_text()
+                .map(|current| current == secret)
+                .unwrap_or(false);
+            if still_ours {
+                let _ = handle.clipboard().write_text(String::new());
+            }
         });
     }
 

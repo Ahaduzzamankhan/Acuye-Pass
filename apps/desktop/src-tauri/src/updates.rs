@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use acuye_updater::{self, ReleaseChannel, UpdateCandidate, VerifiedUpdate};
 use serde::Serialize;
@@ -360,11 +359,3 @@ pub fn discard_update(state: State<'_, AppState>) -> ApiResult<()> {
     runtime.progress = None;
     Ok(())
 }
-
-/// Build the download destination used by the UI (exposed for diagnostics).
-pub fn download_destination(base: &std::path::Path, candidate: &UpdateCandidate) -> PathBuf {
-    base.join(&candidate.version).join(&candidate.asset.name)
-}
-
-#[allow(dead_code)]
-fn _assert_send_sync(_: Arc<UpdateRuntime>) {}

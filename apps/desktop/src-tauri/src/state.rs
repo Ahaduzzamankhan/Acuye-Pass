@@ -1,6 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use acuye_auth::{AuthService, UnlockedVault};
@@ -199,15 +199,11 @@ pub fn cache_key(value: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub fn ensure_within(base: &Path, candidate: &Path) -> ApiResult<PathBuf> {
-    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
-    let candidate = candidate
-        .canonicalize()
-        .unwrap_or_else(|_| candidate.to_path_buf());
-    if !candidate.starts_with(&base) {
-        return Err(ApiError::validation(
-            "Path is outside the application data folder",
-        ));
-    }
-    Ok(candidate)
+/// Re-read the device identity from the stored settings.
+///
+/// Used after a backup restore, where the vault (and with it the registered
+/// device row and id) comes from another machine.
+pub fn reload_device_identity(core: &mut Core) -> ApiResult<()> {
+    core.device_id = ensure_device(core.auth.db())?;
+    Ok(())
 }

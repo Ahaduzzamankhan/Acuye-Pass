@@ -366,10 +366,9 @@ pub fn validate_master_password(password: &str, username: &str) -> Result<()> {
     }
     let evaluation = strength::evaluate(password);
     if evaluation.score < 2 || strength::character_class_count(password) < 3 {
-        return Err(AcuyeError::Validation(
-            "Choose a stronger master password: at least 12 characters with mixed character types"
-                .into(),
-        ));
+        return Err(AcuyeError::Validation(format!(
+            "Choose a stronger master password: at least {MIN_MASTER_PASSWORD_LEN} characters with mixed character types"
+        )));
     }
     Ok(())
 }

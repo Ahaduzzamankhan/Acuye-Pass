@@ -158,10 +158,20 @@ impl Vault {
         let ts = acuye_core::time::now();
         let mut copy = source;
         copy.id = uuid::Uuid::new_v4().to_string();
-        copy.title = format!("{} (copy)", copy.title);
+        // Keep the copy inside the title limit: a duplicated item that fails
+        // validation could never be edited again.
+        const SUFFIX: &str = " (copy)";
+        let base: String = copy
+            .title
+            .chars()
+            .take(acuye_core::item::MAX_TITLE_LEN - SUFFIX.chars().count())
+            .collect();
+        copy.title = format!("{}{SUFFIX}", base.trim_end());
         copy.favorite = false;
         copy.created_at = ts;
         copy.updated_at = ts;
+        copy.normalize();
+        copy.validate()?;
         self.items.push(copy.clone());
         self.touch();
         Ok(copy)
@@ -429,6 +439,22 @@ mod tests {
         assert!(vault.get(&item.id).is_none());
         assert!(vault.delete(&item.id).is_err());
         assert!(vault.update(login("x", "y")).is_err());
+    }
+
+    #[test]
+    fn duplicate_keeps_the_title_within_limits() {
+        let mut vault = Vault::new("Personal");
+        let long = "T".repeat(acuye_core::item::MAX_TITLE_LEN);
+        let item = vault.add(login(&long, "password-aaaaaaaaaa")).unwrap();
+        let copy = vault.duplicate(&item.id).unwrap();
+        assert!(copy.title.chars().count() <= acuye_core::item::MAX_TITLE_LEN);
+        assert!(copy.title.ends_with(" (copy)"));
+        assert!(copy.validate().is_ok());
+
+        // A duplicated item must still be editable afterwards.
+        let mut edited = copy.clone();
+        edited.title = "Renamed".into();
+        assert!(vault.update(edited).is_ok());
     }
 
     #[test]

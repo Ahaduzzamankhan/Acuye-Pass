@@ -114,6 +114,12 @@ pub fn decrypt_export(payload: &str, password: &str) -> Result<ImportedExport> {
     )?;
     let items: Vec<Item> = serde_json::from_slice(&plaintext).map_err(|_| AcuyeError::Format)?;
     plaintext.zeroize();
+    // `item_count` is unauthenticated envelope metadata; a mismatch means the
+    // file was edited by hand or produced by something else, so fail closed
+    // instead of importing a partial vault.
+    if envelope.item_count != items.len() {
+        return Err(AcuyeError::Format);
+    }
     Ok(ImportedExport {
         items,
         created_at: envelope.created_at,
@@ -255,6 +261,18 @@ mod tests {
 
         envelope.version = 1;
         envelope.format = "other".into();
+        assert!(decrypt_export(
+            &serde_json::to_string(&envelope).unwrap(),
+            "export-password-123"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mismatched_item_count_is_rejected() {
+        let payload = encrypt_export(&items(), "export-password-123", test_kdf()).unwrap();
+        let mut envelope: EncryptedExportEnvelope = serde_json::from_str(&payload).unwrap();
+        envelope.item_count = 5;
         assert!(decrypt_export(
             &serde_json::to_string(&envelope).unwrap(),
             "export-password-123"
