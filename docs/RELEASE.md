@@ -47,6 +47,13 @@ updates; back it up offline.
    produces NSIS and MSI bundles plus `.sig` files, and publishes a GitHub
    release. Pre-release tags are published as prereleases.
 
+You can also run the same workflow by hand from **Actions → Release → Run
+workflow**, passing the version (for example `v0.1.0`) as the only input. Nothing
+else changes: the version is validated by `scripts/set-version.mjs` exactly as
+with a tag, and the release is attached to that tag, which is created at the
+built commit if it does not exist yet. Dispatch it from `main` so the tag lands
+on the commit you intend to ship.
+
 ## Verifying a release
 
 - The release must contain an `x64` NSIS `.exe` and/or `.msi` whose names start
