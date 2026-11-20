@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acuye-auth"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -18,7 +18,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-breach"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "serde",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-crypto"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "argon2",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-export"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-ffi"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-auth",
  "acuye-core",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-generator"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-import"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-vault",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-lan"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-pass"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-auth",
  "acuye-breach",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-platform"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "base64 0.22.1",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-protocol"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "serde",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-storage"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "rusqlite",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-sync"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-totp"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "hmac",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "acuye-updater"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
@@ -217,13 +217,16 @@ dependencies = [
 
 [[package]]
 name = "acuye-vault"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "acuye-core",
  "acuye-crypto",
  "acuye-generator",
+ "acuye-storage",
+ "hmac",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "uuid",
 ]
 

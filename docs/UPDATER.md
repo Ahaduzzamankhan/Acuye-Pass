@@ -2,7 +2,7 @@
 
 The updater is implemented in Rust (`crates/acuye-updater`) and wired through
 `apps/desktop/src-tauri/src/updates.rs`. It deliberately does not use a generic
-update endpoint.
+update endpoint and does not trust a `latest` pointer.
 
 ## Trust rules
 
@@ -19,6 +19,16 @@ update endpoint.
 
 Development builds may read a public key from `ACUYE_UPDATER_PUBKEY_FILE` or an
 environment variable; this fallback is compiled only with `cfg!(debug_assertions)`.
+
+### Limits
+
+| Item | Cap |
+| --- | --- |
+| Release metadata | 4 MiB |
+| Signature asset | 8 KiB |
+| Installer | 256 MiB |
+
+Assets outside these limits are rejected rather than truncated.
 
 ## Channels
 
@@ -38,12 +48,19 @@ verified → installing` with `failed` on error. Progress events are emitted as
 `update://progress` and `update://finished`; the settings screen renders a
 progress bar, version, notes, checksum and size.
 
+Each stage is separately abortable. Discarding a download removes the partial
+file; a verification failure leaves the installed version untouched.
+
 ## Assets
 
 Only Windows installers (`.exe`, `.msi`) whose names contain `x64`/`x86_64` and
 start with an allowed prefix are considered. Each installer must have a
-same-named `.sig` asset. Maximum installer size is 256 MiB; release metadata is
-capped at 4 MiB and signatures at 8 KiB.
+same-named `.sig` asset.
+
+## Auto-check
+
+When enabled, the app checks at most once every six hours, and only when the
+Updates settings section is opened. There is no background polling service.
 
 ## Key rotation
 
@@ -57,3 +74,11 @@ To rotate the updater key:
 
 Because downgrades are rejected, a broken release must be fixed with a higher
 version.
+
+## What the updater never does
+
+- It never installs without user consent.
+- It never follows a redirect to a URL outside the official release path.
+- It never accepts a signature from an unknown key.
+- It never downgrades, even if a newer tag is deleted or a release is unpublished.
+- It never sends vault data, usage data or an identifier in an update request.

@@ -40,6 +40,26 @@ cargo test --workspace --exclude acuye-pass
 system libraries. On a headless Linux machine, exclude it as shown above; the
 Windows CI job compiles it.
 
+## Benchmarks
+
+The numbers in the README come from a benchmark that ships in the repository:
+
+```bash
+cargo run --release --example bench -p acuye-vault
+```
+
+It measures:
+
+- Argon2id unlock cost (KDF only and the full unlock path),
+- equivalent PBKDF2 work at Bitwarden (600k) and 1Password (650k) defaults, plus
+  Bitwarden's Argon2id option,
+- encrypt, persist, reload-and-decrypt, search and security-report timings at
+  100 / 1,000 / 5,000 / 20,000 items.
+
+If you change a hot path in `acuye-vault`, `acuye-crypto` or `acuye-storage`, run
+it before and after and mention both numbers in the pull request. Do not quote
+an unmeasured speedup.
+
 ## Where things live
 
 - `crates/acuye-*` — Rust domain logic and tests
@@ -48,6 +68,8 @@ Windows CI job compiles it.
 - `apps/desktop/src/pages/` — route-level screens
 - `apps/desktop/src/components/ui.tsx` — shared primitives
 - `apps/desktop/src/index.css` — theme tokens
+- `apps/desktop/src-tauri/src/advanced.rs` — authenticator, secrets, breach, LAN
+- `docs/` — architecture, security, privacy, features, sync, release, updater
 
 ## Coding rules
 
@@ -57,12 +79,17 @@ Windows CI job compiles it.
 - New persisted fields require a forward-only migration in `acuye-storage`.
 - New item fields must remain compatible with the `kind` tagged `ItemFields`
   enum, which is stable on disk.
+- New network access must be host-restricted, size-capped and documented in
+  `docs/SECURITY.md` and `docs/PRIVACY.md`. Adding telemetry, analytics, a
+  third-party favicon service or an account system is out of scope for this
+  project.
 - Run `cargo fmt` and the checks above before opening a pull request.
 
 ## Tests
 
 Rust unit tests cover KDF/AEAD, verifier behaviour, rotation, storage
-migrations, import/export, protocol, sync, updater selection and URL validation.
+migrations, import/export, protocol, sync, updater selection, TOTP, breach
+parsing, LAN pairing and URL validation.
 `crates/acuye-auth/tests/workflow.rs` covers the full create → persist → restart
 → unlock → rotate lifecycle on a real SQLite file.
 
@@ -73,8 +100,24 @@ prerelease consent, sidebar collapse.
 ## Adding a Tauri command
 
 1. Implement it in `apps/desktop/src-tauri/src/commands.rs` (or `data.rs`,
-   `updates.rs`).
+   `updates.rs`, `advanced.rs`).
 2. Return a serializable view struct; convert camelCase at the boundary.
 3. Add the method to `Backend` in `src/lib/backend.ts`.
 4. Implement it in both `tauri-backend.ts` and `demo-backend.ts`.
 5. Add tests where the logic is not purely presentational.
+6. Register it in the `invoke_handler` list in `src-tauri/src/lib.rs`.
+
+## Mobile
+
+`apps/mobile` is an empty React Native scaffold. Do not build a second
+implementation of the security model there — a future client should consume the
+Rust core through `acuye-ffi`.
+
+## Troubleshooting
+
+- **`cargo test` fails on a missing `webkit2gtk` / `gtk` library**: exclude the
+  Tauri crate as shown above, or install the Linux packages listed at the top.
+- **The browser preview shows demo data**: expected. `DemoBackend` is in-memory
+  and performs no encryption.
+- **Windows Defender flags a local build**: expected for unsigned development
+  binaries.

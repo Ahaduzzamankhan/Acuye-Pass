@@ -37,7 +37,29 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for prerequisites and checks.
 5. Do not reimplement cryptography or vault rules in TypeScript.
 6. Do not silently change encryption formats, the `ItemFields` tag, migrations
    or the updater trust rules; these need a documented version bump.
-7. Update documentation when behaviour or configuration changes.
+7. Update documentation when behaviour or configuration changes. The docs that
+   must stay true are listed below.
+8. If you touch a hot path, run
+   `cargo run --release --example bench -p acuye-vault` before and after and put
+   both numbers in the pull request.
+
+## Documentation map
+
+| File | Keep it in sync with |
+| --- | --- |
+| `README.md` | Anything user-visible: features, limitations, benchmark numbers |
+| `benchmark.md` | Comparison claims, pricing snapshots, measured numbers |
+| `docs/FEATURES.md` | Every shipped screen, item type, setting and shortcut |
+| `docs/ARCHITECTURE.md` | Crates, schema, key flow, network paths, performance |
+| `docs/SECURITY.md` | Crypto, threat model, network surface, audit status |
+| `docs/PRIVACY.md` | Every outbound request and every local file |
+| `docs/SYNC_PROTOCOL.md` | LAN sync and `acuye-sync/1` behaviour |
+| `docs/RELEASE.md` | Tagging, signing, CI workflow |
+| `docs/UPDATER.md` | Update trust rules, channels, asset allowlists |
+
+Claims in the README about speed must be measured, and claims about other
+products must be attributed and dated. Do not add a comparison figure that has
+not been checked against the vendor's own page.
 
 ## Commit style
 

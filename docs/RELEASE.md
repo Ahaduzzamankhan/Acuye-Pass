@@ -36,14 +36,20 @@ Store these repository secrets:
 Losing the private key means existing installations cannot verify future
 updates; back it up offline.
 
-## Cutting a release
+## Checklist
 
 1. `pnpm lint && pnpm typecheck && pnpm test`
-2. `cargo fmt --all --check && cargo test --workspace` (on Windows or with the
+2. `cargo fmt --all --check && cargo test --workspace` (on Windows, or with the
    Tauri crate excluded on Linux).
-3. `node scripts/set-version.mjs vX.Y.Z`
-4. Commit, tag `vX.Y.Z`, push the tag.
-5. `.github/workflows/release.yml` builds on `windows-latest`, runs the checks,
+3. If crypto, storage or vault code changed, rerun
+   `cargo run --release --example bench -p acuye-vault` and update the numbers in
+   `README.md` and `benchmark.md` if they moved materially.
+4. Update `docs/FEATURES.md` for new or changed user-visible behaviour, and
+   `docs/SECURITY.md` / `docs/PRIVACY.md` for any change to the crypto, network
+   surface or stored data.
+5. `node scripts/set-version.mjs vX.Y.Z`
+6. Commit, tag `vX.Y.Z`, push the tag.
+7. `.github/workflows/release.yml` builds on `windows-latest`, runs the checks,
    produces NSIS and MSI bundles plus `.sig` files, and publishes a GitHub
    release. Pre-release tags are published as prereleases.
 
@@ -69,3 +75,11 @@ Published releases are immutable from the updater's point of view: versions are
 compared with semver and downgrades are rejected. To roll back, publish a new
 higher version containing the fix (for example `1.1.1`). Deleting a release does
 not uninstall it from users' machines.
+
+## What a release does not do
+
+- It does not reset or migrate user vaults beyond the forward-only schema
+  migrations shipped in `acuye-storage`.
+- It does not change the updater public key. Key rotation has its own procedure
+  in [UPDATER.md](UPDATER.md) and must ship in a build *before* the release that
+  depends on the new key.

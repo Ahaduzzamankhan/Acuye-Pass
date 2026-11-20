@@ -12,3 +12,8 @@ acuye-generator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+acuye-storage = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
