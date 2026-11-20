@@ -3,6 +3,8 @@ import type {
   AppSettings,
   AppStatus,
   BackupInfo,
+  BreachItemResult,
+  BreachScanResult,
   CopyResult,
   DeviceView,
   ExportInfo,
@@ -12,13 +14,20 @@ import type {
   ItemFieldsInput,
   ItemSummary,
   ItemType,
+  LanIdentity,
+  LanOffer,
+  LanPairResult,
+  LanPeer,
   ParsedImport,
   PassphraseOptions,
   PasswordOptions,
   PasswordStrength,
+  SecretAccessEntry,
+  SecretAlert,
   SecurityReport,
   SessionView,
   StorageInfo,
+  TotpEntry,
   UpdateStatusView,
   VaultCounts,
 } from "./types";
@@ -84,6 +93,26 @@ export interface Backend {
   installUpdate(): Promise<UpdateStatusView>;
   discardUpdate(): Promise<void>;
   onUpdateProgress(handler: (received: number, total: number) => void): Promise<() => void>;
+
+  // authenticator, secrets, breach monitoring and LAN pairing
+  authenticatorEntries(): Promise<TotpEntry[]>;
+  authenticatorAdd(uri: string): Promise<Item>;
+  authenticatorExport(id: string): Promise<string>;
+  secretCopy(id: string, index: number): Promise<void>;
+  secretReveal(id: string, index: number): Promise<string>;
+  secretAccessLog(id: string): Promise<SecretAccessEntry[]>;
+  secretClearHistory(id: string): Promise<void>;
+  secretAlerts(): Promise<SecretAlert[]>;
+  breachScanVault(): Promise<BreachScanResult>;
+  breachCheckItem(id: string): Promise<BreachItemResult>;
+  lanIdentity(): Promise<LanIdentity>;
+  lanPairingOffer(): Promise<LanOffer>;
+  lanAwaitPairing(timeoutSecs: number): Promise<LanPairResult>;
+  lanPair(uri: string): Promise<LanPairResult>;
+  lanPeers(): Promise<LanPeer[]>;
+  lanRevokePeer(id: string, revoke: boolean): Promise<void>;
+  lanForgetPeer(id: string): Promise<void>;
+  lanTestPeer(id: string): Promise<LanPairResult>;
 
   windowMinimize(): Promise<void>;
   windowToggleMaximize(): Promise<boolean>;

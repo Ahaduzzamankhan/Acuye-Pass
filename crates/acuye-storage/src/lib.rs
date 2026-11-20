@@ -15,10 +15,12 @@ use std::time::Duration;
 use acuye_core::{AccountRecord, AcuyeError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 /// XChaCha20-Poly1305 nonce length. Rows must match exactly; a longer nonce can
 /// never be opened and would only surface as a failed unlock.
 pub const NONCE_LEN: usize = 24;
+/// How many access-history rows are kept per secret item.
+const MAX_SECRET_ACCESS_ROWS: i64 = 200;
 
 fn storage_err(_err: rusqlite::Error) -> AcuyeError {
     // Do not forward driver messages: they may include SQL fragments.
@@ -87,7 +89,54 @@ const MIGRATIONS: &[&str] = &[
         queued_at INTEGER NOT NULL
     );
     "#,
+    // v3: LAN peer trust list and secret access history. Neither table holds
+    // secret material: peers store public keys only, the history stores actions
+    // and timestamps only.
+    r#"
+    CREATE TABLE IF NOT EXISTS lan_peers (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        signing_key TEXT NOT NULL,
+        exchange_key TEXT NOT NULL,
+        address TEXT NOT NULL,
+        paired_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        revoked INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS secret_access (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_secret_access_item ON secret_access(item_id);
+    "#,
 ];
+
+/// One approved LAN peer. Public keys and an address only.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LanPeerRow {
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub signing_key: String,
+    pub exchange_key: String,
+    pub address: String,
+    pub paired_at: i64,
+    pub last_seen_at: i64,
+    pub revoked: bool,
+}
+
+/// One entry of the secret access history: what happened, when, and to which
+/// item — never the value that was copied or revealed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SecretAccessRow {
+    pub item_id: String,
+    pub action: String,
+    pub at: i64,
+}
 
 /// One encrypted item row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -596,6 +645,201 @@ impl Database {
         Ok(out)
     }
 
+    // ----- LAN peers -------------------------------------------------------
+
+    /// Approved LAN peers, ordered by name.
+    pub fn lan_peers(&self) -> Result<Vec<LanPeerRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, platform, signing_key, exchange_key, address,
+                        paired_at, last_seen_at, revoked
+                 FROM lan_peers ORDER BY name",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LanPeerRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    platform: row.get(2)?,
+                    signing_key: row.get(3)?,
+                    exchange_key: row.get(4)?,
+                    address: row.get(5)?,
+                    paired_at: row.get(6)?,
+                    last_seen_at: row.get(7)?,
+                    revoked: row.get::<_, i64>(8)? != 0,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Insert or refresh a peer (re-pairing clears a previous revocation).
+    pub fn upsert_lan_peer(&mut self, peer: &LanPeerRow) -> Result<()> {
+        if peer.id.is_empty() || peer.name.is_empty() || peer.exchange_key.is_empty() {
+            return Err(AcuyeError::Validation("invalid device record".into()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO lan_peers (id, name, platform, signing_key, exchange_key,
+                    address, paired_at, last_seen_at, revoked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    platform = excluded.platform,
+                    signing_key = excluded.signing_key,
+                    exchange_key = excluded.exchange_key,
+                    address = excluded.address,
+                    paired_at = excluded.paired_at,
+                    last_seen_at = excluded.last_seen_at,
+                    revoked = excluded.revoked",
+                params![
+                    peer.id,
+                    peer.name,
+                    peer.platform,
+                    peer.signing_key,
+                    peer.exchange_key,
+                    peer.address,
+                    peer.paired_at,
+                    peer.last_seen_at,
+                    peer.revoked as i32,
+                ],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Mark a peer as revoked (or restore it) and remember when.
+    pub fn set_lan_peer_revoked(&mut self, id: &str, revoked: bool, at: i64) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE lan_peers SET revoked = ?2, last_seen_at = MAX(last_seen_at, ?3)
+                 WHERE id = ?1",
+                params![id, revoked as i32, at],
+            )
+            .map_err(storage_err)?;
+        if changed == 0 {
+            return Err(AcuyeError::NotFound("device".into()));
+        }
+        Ok(())
+    }
+
+    /// Record that a peer was seen.
+    pub fn touch_lan_peer(&mut self, id: &str, at: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE lan_peers SET last_seen_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Forget a peer entirely.
+    pub fn delete_lan_peer(&mut self, id: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM lan_peers WHERE id = ?1", params![id])
+            .map_err(storage_err)?;
+        if changed == 0 {
+            return Err(AcuyeError::NotFound("device".into()));
+        }
+        Ok(())
+    }
+
+    // ----- secret access history ------------------------------------------
+
+    /// Record an access to a secret item. Only the action name is stored — never
+    /// a field label, value, or anything derived from the value.
+    pub fn record_secret_access(&mut self, item_id: &str, action: &str, at: i64) -> Result<()> {
+        let action = action.trim();
+        if action.is_empty() || action.len() > 32 {
+            return Err(AcuyeError::Validation("invalid access action".into()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO secret_access (item_id, action, at) VALUES (?1, ?2, ?3)",
+                params![item_id, action, at],
+            )
+            .map_err(storage_err)?;
+        // Keep the history bounded per item so it cannot grow without limit.
+        self.conn
+            .execute(
+                "DELETE FROM secret_access
+                 WHERE item_id = ?1 AND id NOT IN (
+                    SELECT id FROM secret_access WHERE item_id = ?1
+                    ORDER BY at DESC, id DESC LIMIT ?2
+                 )",
+                params![item_id, MAX_SECRET_ACCESS_ROWS],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Access history for one item, newest first.
+    pub fn secret_access(&self, item_id: &str) -> Result<Vec<SecretAccessRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT item_id, action, at FROM secret_access
+                 WHERE item_id = ?1 ORDER BY at DESC, id DESC LIMIT 50",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map(params![item_id], |row| {
+                Ok(SecretAccessRow {
+                    item_id: row.get(0)?,
+                    action: row.get(1)?,
+                    at: row.get(2)?,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Whole access history, used when restoring a backup.
+    pub fn secret_access_all(&self) -> Result<Vec<SecretAccessRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT item_id, action, at FROM secret_access ORDER BY at")
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SecretAccessRow {
+                    item_id: row.get(0)?,
+                    action: row.get(1)?,
+                    at: row.get(2)?,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Delete the history of one item.
+    pub fn clear_secret_access(&mut self, item_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM secret_access WHERE item_id = ?1",
+                params![item_id],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
     pub fn revoke_device(&self, id: &str) -> Result<()> {
         let changed = self
             .conn
@@ -649,6 +893,8 @@ impl Database {
         let devices = source_db.list_devices()?;
         let sync_state = source_db.sync_state_rows()?;
         let sync_outbox = source_db.sync_outbox_rows()?;
+        let lan_peers = source_db.lan_peers()?;
+        let secret_access = source_db.secret_access_all()?;
 
         let tx = self.conn.transaction().map_err(storage_err)?;
         tx.execute("DELETE FROM items", []).map_err(storage_err)?;
@@ -660,6 +906,10 @@ impl Database {
         tx.execute("DELETE FROM sync_state", [])
             .map_err(storage_err)?;
         tx.execute("DELETE FROM sync_outbox", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM lan_peers", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM secret_access", [])
             .map_err(storage_err)?;
         tx.execute(
             "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
@@ -752,6 +1002,38 @@ impl Database {
                 .map_err(storage_err)?;
             for (revision, item_id, operation, queued_at) in &sync_outbox {
                 stmt.execute(params![revision, item_id, operation, queued_at])
+                    .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO lan_peers (id, name, platform, signing_key, exchange_key,
+                        address, paired_at, last_seen_at, revoked)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(storage_err)?;
+            for peer in &lan_peers {
+                stmt.execute(params![
+                    peer.id,
+                    peer.name,
+                    peer.platform,
+                    peer.signing_key,
+                    peer.exchange_key,
+                    peer.address,
+                    peer.paired_at,
+                    peer.last_seen_at,
+                    peer.revoked as i32,
+                ])
+                .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare("INSERT INTO secret_access (item_id, action, at) VALUES (?1, ?2, ?3)")
+                .map_err(storage_err)?;
+            for row in &secret_access {
+                stmt.execute(params![row.item_id, row.action, row.at])
                     .map_err(storage_err)?;
             }
         }

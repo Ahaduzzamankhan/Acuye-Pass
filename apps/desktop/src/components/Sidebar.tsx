@@ -5,6 +5,8 @@ import {
   CreditCard,
   Fingerprint,
   KeyRound,
+  Laptop,
+  KeySquare,
   LayoutGrid,
   Lock,
   LogOut,
@@ -183,6 +185,13 @@ export function Sidebar() {
               {(report.weak || 0) + (report.reused || 0) + (report.empty || 0)}
             </span>
           ) : undefined,
+        )}
+        {navButton(location.pathname === "/authenticator", "Authenticator", <KeyRound />, () =>
+          go("/authenticator"),
+        )}
+        {navButton(location.pathname === "/secrets", "Secrets", <KeySquare />, () => go("/secrets"))}
+        {navButton(location.pathname === "/devices", "Trusted Devices", <Laptop />, () =>
+          go("/devices"),
         )}
         {navButton(location.pathname === "/vaults", "Vaults", <Vault />, () => go("/vaults"))}
         {navButton(location.pathname.startsWith("/settings"), "Settings", <Settings />, () => go("/settings/appearance"))}

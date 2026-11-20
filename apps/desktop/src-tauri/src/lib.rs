@@ -5,6 +5,7 @@
 //! scoped Tauri commands, holds the unlocked session in memory and enforces the
 //! idle timeout. The webview never touches the database directly.
 
+mod advanced;
 mod commands;
 mod data;
 mod error;
@@ -94,6 +95,27 @@ pub fn run() {
             updates::verify_update,
             updates::install_update,
             updates::discard_update,
+            // authenticator, secrets, breach monitoring
+            advanced::authenticator_entries,
+            advanced::authenticator_add,
+            advanced::authenticator_export,
+            advanced::secret_copy,
+            advanced::secret_reveal,
+            advanced::secret_access_log,
+            advanced::secret_clear_history,
+            advanced::secret_alerts,
+            advanced::breach_check_item,
+            advanced::breach_scan_vault,
+            // hostless LAN pairing
+            advanced::lan_identity,
+            advanced::lan_pairing_offer,
+            advanced::lan_await_pairing,
+            advanced::lan_pair,
+            advanced::lan_peers,
+            advanced::lan_revoke_peer,
+            advanced::lan_forget_peer,
+            advanced::lan_test_peer,
+            advanced::lan_answer_ping,
             // window chrome
             window::window_minimize,
             window::window_toggle_maximize,

@@ -36,6 +36,18 @@ import {
   type VaultCounts,
 } from "./types";
 
+import type {
+  BreachItemResult,
+  BreachScanResult,
+  LanIdentity,
+  LanOffer,
+  LanPairResult,
+  LanPeer,
+  SecretAccessEntry,
+  SecretAlert,
+  TotpEntry,
+} from "./types";
+
 const STORAGE_KEY = "acuye-preview-state-v1";
 
 interface PreviewState {
@@ -692,6 +704,64 @@ export class DemoBackend implements Backend {
 
   async onUpdateProgress() {
     return () => undefined;
+  }
+
+  // Advanced features need the Rust side; the preview keeps the shapes valid so
+  // the pages render their empty states.
+  async authenticatorEntries(): Promise<TotpEntry[]> {
+    return [];
+  }
+  async authenticatorAdd(): Promise<Item> {
+    throw new BackendError("unsupported", "The authenticator runs in the desktop app");
+  }
+  async authenticatorExport(): Promise<string> {
+    throw new BackendError("unsupported", "The authenticator runs in the desktop app");
+  }
+  async secretCopy(): Promise<void> {
+    throw new BackendError("unsupported", "Secrets are handled in the desktop app");
+  }
+  async secretReveal(): Promise<string> {
+    throw new BackendError("unsupported", "Secrets are handled in the desktop app");
+  }
+  async secretAccessLog(): Promise<SecretAccessEntry[]> {
+    return [];
+  }
+  async secretClearHistory(): Promise<void> {}
+  async secretAlerts(): Promise<SecretAlert[]> {
+    return [];
+  }
+  async breachScanVault(): Promise<BreachScanResult> {
+    return {
+      checked: 0,
+      breached: 0,
+      clean: 0,
+      unavailable: 0,
+      results: [],
+      scannedAt: Math.floor(Date.now() / 1000),
+    };
+  }
+  async breachCheckItem(): Promise<BreachItemResult> {
+    throw new BackendError("unsupported", "Breach checks need the desktop app");
+  }
+  async lanIdentity(): Promise<LanIdentity> {
+    return { deviceId: "preview-device", address: "127.0.0.1:47821", port: 47821 };
+  }
+  async lanPairingOffer(): Promise<LanOffer> {
+    throw new BackendError("unsupported", "Pairing needs the desktop app");
+  }
+  async lanAwaitPairing(): Promise<LanPairResult> {
+    throw new BackendError("unsupported", "Pairing needs the desktop app");
+  }
+  async lanPair(): Promise<LanPairResult> {
+    throw new BackendError("unsupported", "Pairing needs the desktop app");
+  }
+  async lanPeers(): Promise<LanPeer[]> {
+    return [];
+  }
+  async lanRevokePeer(): Promise<void> {}
+  async lanForgetPeer(): Promise<void> {}
+  async lanTestPeer(): Promise<LanPairResult> {
+    throw new BackendError("unsupported", "Pairing needs the desktop app");
   }
 
   async windowMinimize() {}

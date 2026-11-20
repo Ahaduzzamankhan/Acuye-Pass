@@ -8,6 +8,9 @@ import type { Backend } from "@/lib/backend";
 import { BackendProvider } from "@/lib/backend-context";
 import { AppProvider, useApp } from "@/lib/app-context";
 import { useTheme } from "@/hooks/useTheme";
+import { AuthenticatorPage } from "@/pages/AuthenticatorPage";
+import { DevicesPage } from "@/pages/DevicesPage";
+import { SecretsPage } from "@/pages/SecretsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { Onboarding } from "@/pages/Onboarding";
 import { SecurityCenter } from "@/pages/SecurityCenter";
@@ -53,6 +56,9 @@ export function AppRoutes() {
           <Route index element={<Navigate to="/vault" replace />} />
           <Route path="/vault" element={<VaultPage />} />
           <Route path="/security" element={<SecurityCenter />} />
+          <Route path="/authenticator" element={<AuthenticatorPage />} />
+          <Route path="/secrets" element={<SecretsPage />} />
+          <Route path="/devices" element={<DevicesPage />} />
           <Route path="/vaults" element={<VaultsPage />} />
           <Route path="/settings" element={<Navigate to="/settings/appearance" replace />} />
           <Route path="/settings/:section" element={<SettingsPage />} />

@@ -17,7 +17,16 @@ import type {
   ItemFieldsInput,
   ItemSummary,
   ItemType,
+  BreachItemResult,
+  BreachScanResult,
   ParsedImport,
+  LanIdentity,
+  LanOffer,
+  LanPairResult,
+  LanPeer,
+  SecretAccessEntry,
+  SecretAlert,
+  TotpEntry,
   PassphraseOptions,
   PasswordOptions,
   PasswordStrength,
@@ -213,6 +222,62 @@ export class TauriBackend implements Backend {
       (event) => handler(event.payload.received, event.payload.total),
     );
     return unlisten;
+  }
+
+  // advanced security features
+  authenticatorEntries() {
+    return call<TotpEntry[]>("authenticator_entries");
+  }
+  authenticatorAdd(uri: string) {
+    return call<Item>("authenticator_add", { uri });
+  }
+  authenticatorExport(id: string) {
+    return call<string>("authenticator_export", { id });
+  }
+  secretCopy(id: string, index: number) {
+    return call<void>("secret_copy", { id, index });
+  }
+  secretReveal(id: string, index: number) {
+    return call<string>("secret_reveal", { id, index });
+  }
+  secretAccessLog(id: string) {
+    return call<SecretAccessEntry[]>("secret_access_log", { id });
+  }
+  secretClearHistory(id: string) {
+    return call<void>("secret_clear_history", { id });
+  }
+  secretAlerts() {
+    return call<SecretAlert[]>("secret_alerts");
+  }
+  breachScanVault() {
+    return call<BreachScanResult>("breach_scan_vault");
+  }
+  breachCheckItem(id: string) {
+    return call<BreachItemResult>("breach_check_item", { id });
+  }
+  lanIdentity() {
+    return call<LanIdentity>("lan_identity");
+  }
+  lanPairingOffer() {
+    return call<LanOffer>("lan_pairing_offer");
+  }
+  lanAwaitPairing(timeoutSecs: number) {
+    return call<LanPairResult>("lan_await_pairing", { timeoutSecs });
+  }
+  lanPair(uri: string) {
+    return call<LanPairResult>("lan_pair", { uri });
+  }
+  lanPeers() {
+    return call<LanPeer[]>("lan_peers");
+  }
+  lanRevokePeer(id: string, revoke: boolean) {
+    return call<void>("lan_revoke_peer", { id, revoke });
+  }
+  lanForgetPeer(id: string) {
+    return call<void>("lan_forget_peer", { id });
+  }
+  lanTestPeer(id: string) {
+    return call<LanPairResult>("lan_test_peer", { id });
   }
 
   windowMinimize() {

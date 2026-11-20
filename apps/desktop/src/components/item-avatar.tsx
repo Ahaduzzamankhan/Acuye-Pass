@@ -3,6 +3,8 @@ import {
   FileText,
   Fingerprint,
   KeyRound,
+  KeySquare,
+  ShieldCheck,
   SlidersHorizontal,
   StickyNote,
 } from "lucide-react";
@@ -17,6 +19,8 @@ const ICONS: Record<ItemType, typeof KeyRound> = {
   identity: Fingerprint,
   document: FileText,
   custom: SlidersHorizontal,
+  totp: ShieldCheck,
+  secret: KeySquare,
 };
 
 export function ItemAvatar({

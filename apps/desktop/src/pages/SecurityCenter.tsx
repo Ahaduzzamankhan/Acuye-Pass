@@ -11,7 +11,11 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
+import { useState } from "react";
+
 import { useApp } from "@/lib/app-context";
+import { useBackend } from "@/lib/backend-context";
+import type { BreachScanResult } from "@/lib/types";
 import { relativeTime } from "@/lib/utils";
 import { Badge, Button, IconButton, Spinner } from "@/components/ui";
 import type { SecurityIssueKind } from "@/lib/types";
@@ -26,6 +30,22 @@ const ISSUE_META: Record<SecurityIssueKind, { label: string; tone: "danger" | "w
 export function SecurityCenter() {
   const { report, recheckSecurity, selectItem, setFilter, counts } = useApp();
   const navigate = useNavigate();
+  const backend = useBackend();
+  const [breach, setBreach] = useState<BreachScanResult | null>(null);
+  const [breachBusy, setBreachBusy] = useState(false);
+  const [breachError, setBreachError] = useState<string | null>(null);
+
+  const runBreachScan = async () => {
+    setBreachBusy(true);
+    setBreachError(null);
+    try {
+      setBreach(await backend.breachScanVault());
+    } catch (cause) {
+      setBreachError(cause instanceof Error ? cause.message : "The breach scan could not run");
+    } finally {
+      setBreachBusy(false);
+    }
+  };
 
   const openIssue = async (itemId: string) => {
     setFilter("all");
@@ -101,19 +121,48 @@ export function SecurityCenter() {
             <IssueCard label="Reused passwords" value={report?.reused ?? 0} tone="warning" icon={<AlertTriangle />} />
             <IssueCard label="Old passwords" value={report?.old ?? 0} tone="muted" icon={<CalendarClock />} />
             <IssueCard label="Missing passwords" value={report?.empty ?? 0} tone="danger" icon={<ShieldAlert />} />
-            <div className="sm:col-span-2 flex items-center gap-3 rounded-xl border border-border bg-surface p-4">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-success/10 text-success">
-                <ShieldCheck className="h-4.5 w-4.5" />
+            <div className="sm:col-span-2 rounded-xl border border-border bg-surface p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-success/10 text-success">
+                  <ShieldCheck className="h-4.5 w-4.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium">Breach monitoring (k-anonymity)</p>
+                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                    Passwords are hashed here; only the first five characters of the SHA-1 hash are
+                    sent to the Pwned Passwords range API. A failed lookup is reported as
+                    unavailable, never as clean.
+                  </p>
+                </div>
+                <Badge tone="success">Private</Badge>
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium">Everything is checked locally</p>
-                <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-                  Strength, reuse and password age are computed in Rust on this device. Breach
-                  checks are intentionally not implemented, because they would require sending
-                  password material to a third party.
-                </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button size="sm" disabled={breachBusy} onClick={() => void runBreachScan()}>
+                  {breachBusy ? "Checking…" : "Run breach scan"}
+                </Button>
+                {breach ? (
+                  <span className="text-[11.5px] text-muted-foreground">
+                    {breach.checked} checked · {breach.breached} breached · {breach.clean} clean
+                    {breach.unavailable ? ` · ${breach.unavailable} unavailable` : ""}
+                  </span>
+                ) : null}
               </div>
-              <Badge tone="success">Private</Badge>
+              {breachError ? <p className="mt-2 text-[11.5px] text-danger">{breachError}</p> : null}
+              {breach && breach.results.length > 0 ? (
+                <ul className="mt-2 space-y-1">
+                  {breach.results
+                    .filter((result) => result.status !== "clean")
+                    .slice(0, 6)
+                    .map((result) => (
+                      <li key={result.id} className="text-[11.5px]">
+                        <span className="font-medium">{result.title}</span>{" — "}
+                        <span className={result.status === "breached" ? "text-danger" : "text-muted-foreground"}>
+                          {result.detail}
+                        </span>
+                      </li>
+                    ))}
+                </ul>
+              ) : null}
             </div>
           </div>
         </div>

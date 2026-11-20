@@ -1,6 +1,6 @@
 [package]
 name = "acuye-pass"
-version = "0.1.0"
+version = "0.1.2"
 description = "Acuye Pass — privacy-focused password manager by Fluxenite"
 edition = "2021"
 rust-version = "1.84"
@@ -33,3 +33,7 @@ acuye-import = { workspace = true }
 acuye-export = { workspace = true }
 acuye-platform = { workspace = true }
 acuye-updater = { workspace = true }
+acuye-totp = { workspace = true }
+acuye-breach = { workspace = true }
+acuye-lan = { workspace = true }
+zeroize = { workspace = true }

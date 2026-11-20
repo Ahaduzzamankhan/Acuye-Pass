@@ -1,0 +1,14 @@
+[package]
+name = "acuye-totp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+acuye-core = { workspace = true }
+serde = { workspace = true }
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+zeroize = { workspace = true }

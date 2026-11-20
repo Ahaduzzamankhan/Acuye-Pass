@@ -1,7 +1,15 @@
 // Types mirroring the Rust command surface. Rust models use snake_case for
 // domain objects and camelCase for command view structs.
 
-export type ItemType = "login" | "secure_note" | "card" | "identity" | "document" | "custom";
+export type ItemType =
+  | "login"
+  | "secure_note"
+  | "card"
+  | "identity"
+  | "document"
+  | "custom"
+  | "totp"
+  | "secret";
 
 export interface CustomField {
   label: string;
@@ -49,7 +57,25 @@ export type ItemFields =
       size_bytes: number;
       sha256: string;
     }
-  | { kind: "custom"; fields: CustomField[] };
+  | { kind: "custom"; fields: CustomField[] }
+  | {
+      kind: "totp";
+      secret: string;
+      issuer: string;
+      account: string;
+      algorithm: string;
+      digits: number;
+      period: number;
+    }
+  | {
+      kind: "secret";
+      environment: string;
+      category: string;
+      fields: CustomField[];
+      expires_at: number | null;
+      rotate_every_days: number | null;
+      last_rotated_at: number | null;
+    };
 
 export interface Item {
   id: string;
@@ -389,6 +415,26 @@ export const emptyFields = (kind: ItemType): ItemFields => {
       return { kind: "document", filename: "", mime_type: "", size_bytes: 0, sha256: "" };
     case "custom":
       return { kind: "custom", fields: [{ label: "", value: "", concealed: false }] };
+    case "totp":
+      return {
+        kind: "totp",
+        secret: "",
+        issuer: "",
+        account: "",
+        algorithm: "sha1",
+        digits: 6,
+        period: 30,
+      };
+    case "secret":
+      return {
+        kind: "secret",
+        environment: "development",
+        category: "",
+        fields: [{ label: "", value: "", concealed: true }],
+        expires_at: null,
+        rotate_every_days: null,
+        last_rotated_at: null,
+      };
   }
 };
 
@@ -406,5 +452,88 @@ export const itemTypeLabel = (kind: ItemType): string => {
       return "Document";
     case "custom":
       return "Custom";
+    case "totp":
+      return "Authenticator";
+    case "secret":
+      return "Secret";
   }
 };
+
+// ---------------------------------------------------------------------------
+// Advanced security features
+// ---------------------------------------------------------------------------
+
+export type SecretEnvironment = "development" | "testing" | "production";
+
+/** One authenticator entry with its current code, computed in Rust. */
+export interface TotpEntry {
+  id: string;
+  title: string;
+  issuer: string;
+  account: string;
+  code: string;
+  digits: number;
+  period: number;
+  remaining: number;
+  algorithm: string;
+  error: string | null;
+}
+
+export interface SecretAccessEntry {
+  action: string;
+  at: number;
+}
+
+export interface SecretAlert {
+  id: string;
+  title: string;
+  kind: "expired" | "expiring" | "rotation_due" | "rotation_soon";
+  dueAt: number;
+}
+
+export type BreachStatusKind = "clean" | "breached" | "unavailable";
+
+export interface BreachItemResult {
+  id: string;
+  title: string;
+  status: BreachStatusKind;
+  count: number;
+  detail: string;
+}
+
+export interface BreachScanResult {
+  checked: number;
+  breached: number;
+  clean: number;
+  unavailable: number;
+  results: BreachItemResult[];
+  scannedAt: number;
+}
+
+export interface LanIdentity {
+  deviceId: string;
+  address: string;
+  port: number;
+}
+
+export interface LanOffer {
+  deviceId: string;
+  address: string;
+  uri: string;
+  expiresAt: number;
+}
+
+export interface LanPeer {
+  id: string;
+  name: string;
+  platform: string;
+  address: string;
+  pairedAt: number;
+  lastSeenAt: number;
+  revoked: boolean;
+}
+
+export interface LanPairResult {
+  peer: LanPeer;
+  sas: string;
+}

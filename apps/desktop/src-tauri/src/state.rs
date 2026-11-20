@@ -105,6 +105,8 @@ pub struct UpdateRuntime {
 pub struct AppState {
     pub core: Mutex<Core>,
     pub update: Arc<Mutex<UpdateRuntime>>,
+    /// The pairing code currently displayed, so the listener only accepts it.
+    pub lan_pending: Mutex<Option<acuye_lan::PairingOffer>>,
 }
 
 impl AppState {
@@ -130,6 +132,7 @@ impl AppState {
                 device_id,
             }),
             update: Arc::new(Mutex::new(UpdateRuntime::default())),
+            lan_pending: Mutex::new(None),
         })
     }
 }
