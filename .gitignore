@@ -6,6 +6,7 @@ node_modules/
 dist/
 apps/desktop/dist/
 apps/mobile/dist/
+apps/site/.next/
 
 # rust
 target/
