@@ -101,7 +101,10 @@ fn full_lifecycle_survives_restart_and_password_rotation() {
     // Rotation re-encrypts the vault; the old password stops working.
     {
         let mut auth = service(&path);
-        let rotated = auth.change_master_password(PASSWORD, NEW_PASSWORD).unwrap();
+        let vault_id = auth.account_summary().unwrap().unwrap().vault_id;
+        let rotated = auth
+            .change_master_password(&vault_id, PASSWORD, NEW_PASSWORD)
+            .unwrap();
         assert_eq!(rotated.vault.get(&item_id).unwrap().title, "Example");
     }
     {

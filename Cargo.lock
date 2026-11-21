@@ -28,6 +28,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "acuye-browser-host"
+version = "0.1.4"
+dependencies = [
+ "acuye-auth",
+ "acuye-core",
+ "acuye-crypto",
+ "acuye-storage",
+ "acuye-totp",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "acuye-core"
 version = "0.1.4"
 dependencies = [

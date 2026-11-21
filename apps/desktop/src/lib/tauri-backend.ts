@@ -64,8 +64,14 @@ export class TauriBackend implements Backend {
   createAccount(username: string, password: string) {
     return call<SessionView>("create_account", { username, password });
   }
-  unlock(username: string, password: string) {
-    return call<SessionView>("unlock", { username, password });
+  addAccount(username: string, password: string, vaultName?: string | null) {
+    return call<SessionView>("add_account", { username, password, vaultName: vaultName ?? null });
+  }
+  listAccounts() {
+    return call<AccountSummary[]>("list_accounts");
+  }
+  unlock(vaultId: string | null, username: string, password: string) {
+    return call<SessionView>("unlock", { vaultId, username, password });
   }
   lock() {
     return call<void>("lock");

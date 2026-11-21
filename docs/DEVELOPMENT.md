@@ -38,7 +38,12 @@ cargo test --workspace --exclude acuye-pass
 
 `cargo test --workspace` also builds the Tauri crate, which needs the desktop
 system libraries. On a headless Linux machine, exclude it as shown above; the
-Windows CI job compiles it.
+Windows CI job compiles it. The browser extension host is an ordinary workspace
+member, so the same commands build and test it.
+
+For the extension itself there is no bundler: `apps/browser-extension` is loaded
+unpacked. Build the host with `cargo build --release -p acuye-browser-host`, then
+follow [BROWSER_EXTENSION.md](BROWSER_EXTENSION.md) to register it.
 
 ## Benchmarks
 
@@ -69,7 +74,10 @@ an unmeasured speedup.
 - `apps/desktop/src/components/ui.tsx` — shared primitives
 - `apps/desktop/src/index.css` — theme tokens
 - `apps/desktop/src-tauri/src/advanced.rs` — authenticator, secrets, breach, LAN
-- `docs/` — architecture, security, privacy, features, sync, release, updater
+- `crates/acuye-browser-host` — native messaging host for the extension
+- `apps/browser-extension/` — Manifest V3 popup, service worker, install scripts
+- `docs/` — architecture, security, privacy, features, sync, release, updater,
+  browser extension
 
 ## Coding rules
 
@@ -79,6 +87,11 @@ an unmeasured speedup.
 - New persisted fields require a forward-only migration in `acuye-storage`.
 - New item fields must remain compatible with the `kind` tagged `ItemFields`
   enum, which is stable on disk.
+- Tauri commands run on the main thread unless they are `async` or annotated
+  `#[tauri::command(async)]`. Anything that waits on the network, a socket or a
+  multi-second disk operation — LAN pairing/sync, breach scans, favicon fetches,
+  imports/exports, backups, update downloads — must be marked `(async)`, or the
+  whole window freezes while it runs.
 - New network access must be host-restricted, size-capped and documented in
   `docs/SECURITY.md` and `docs/PRIVACY.md`. Adding telemetry, analytics, a
   third-party favicon service or an account system is out of scope for this

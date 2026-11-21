@@ -43,6 +43,8 @@ pub fn run() {
             // authentication & session
             commands::app_status,
             commands::create_account,
+            commands::add_account,
+            commands::list_accounts,
             commands::unlock,
             commands::lock,
             commands::logout,

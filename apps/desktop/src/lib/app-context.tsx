@@ -12,6 +12,7 @@ import {
 import { useBackend } from "./backend-context";
 import { useToast } from "@/components/toast";
 import type {
+  AccountSummary,
   AppSettings,
   AppStatus,
   Item,
@@ -25,6 +26,8 @@ import type {
   VaultCounts,
 } from "./types";
 import { DEFAULT_SETTINGS, BackendError } from "./types";
+
+export type AuthMode = "unlock" | "add";
 
 export type VaultFilter =
   | "all"
@@ -50,6 +53,10 @@ const EMPTY_COUNTS: VaultCounts = {
 interface AppContextValue {
   status: AppStatus | null;
   session: SessionView | null;
+  /** Local accounts (one per vault) for the unlock screen's picker. */
+  accounts: AccountSummary[];
+  authMode: AuthMode;
+  setAuthMode: (mode: AuthMode) => void;
   settings: AppSettings;
   items: ItemSummary[];
   counts: VaultCounts;
@@ -65,7 +72,9 @@ interface AppContextValue {
   selectedItem: TypedItem | null;
   selectItem: (id: string | null) => Promise<void>;
   createAccount: (username: string, password: string) => Promise<void>;
-  unlock: (username: string, password: string) => Promise<void>;
+  addAccount: (username: string, password: string, vaultName: string) => Promise<void>;
+  requestAddAccount: () => Promise<void>;
+  unlock: (vaultId: string | null, username: string, password: string) => Promise<void>;
   lock: (reason?: string) => Promise<void>;
   logout: () => Promise<void>;
   createItem: (input: ItemFieldsInput) => Promise<Item>;
@@ -104,6 +113,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { push } = useToast();
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [session, setSession] = useState<SessionView | null>(null);
+  const [accounts, setAccounts] = useState<AccountSummary[]>([]);
+  const [authMode, setAuthMode] = useState<AuthMode>("unlock");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [items, setItems] = useState<ItemSummary[]>([]);
   const [counts, setCounts] = useState<VaultCounts>(EMPTY_COUNTS);
@@ -169,13 +180,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const [nextStatus, nextSettings] = await Promise.all([
+        const [nextStatus, nextSettings, nextAccounts] = await Promise.all([
           backend.appStatus(),
           backend.getSettings(),
+          backend.listAccounts().catch(() => [] as AccountSummary[]),
         ]);
         if (cancelled) return;
         setStatus(nextStatus);
         setSettings(nextSettings);
+        setAccounts(nextAccounts);
         if (nextStatus.hasAccount && !nextStatus.locked && nextStatus.session) {
           setSession(nextStatus.session);
         }
@@ -251,16 +264,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (username: string, password: string) => {
       const next = await backend.createAccount(username, password);
       setSession(next);
+      setAuthMode("unlock");
       lastActivity.current = Date.now();
       setStatus((current) => (current ? { ...current, hasAccount: true, username: next.username, locked: false, session: next } : current));
+      setAccounts(await backend.listAccounts().catch(() => [] as AccountSummary[]));
+    },
+    [backend],
+  );
+
+  const addAccount = useCallback(
+    async (username: string, password: string, vaultName: string) => {
+      const next = await backend.addAccount(username, password, vaultName.trim() || null);
+      setSession(next);
+      setAuthMode("unlock");
+      lastActivity.current = Date.now();
+      setStatus((current) => (current ? { ...current, hasAccount: true, username: next.username, locked: false, session: next } : current));
+      setAccounts(await backend.listAccounts().catch(() => [] as AccountSummary[]));
     },
     [backend],
   );
 
   const unlock = useCallback(
-    async (username: string, password: string) => {
-      const next = await backend.unlock(username, password);
+    async (vaultId: string | null, username: string, password: string) => {
+      const next = await backend.unlock(vaultId, username, password);
       setSession(next);
+      setAuthMode("unlock");
       lastActivity.current = Date.now();
       setStatus((current) => (current ? { ...current, locked: false, session: next } : current));
     },
@@ -287,6 +315,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await lock();
     push({ title: "Signed out", description: "Your vault is locked." });
   }, [backend, lock, push]);
+
+  /// Lock the open vault and open the unlock screen in "add account" mode.
+  const requestAddAccount = useCallback(async () => {
+    setAuthMode("add");
+    await lock();
+  }, [lock]);
 
   const selectItem = useCallback(
     async (id: string | null) => {
@@ -458,6 +492,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       status,
       session,
+      accounts,
+      authMode,
+      setAuthMode,
       settings,
       items,
       counts,
@@ -473,6 +510,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       selectedItem,
       selectItem,
       createAccount,
+      addAccount,
+      requestAddAccount,
       unlock,
       lock,
       logout,
@@ -496,6 +535,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       status,
       session,
+      accounts,
+      authMode,
       settings,
       items,
       counts,
@@ -507,8 +548,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       query,
       selectedId,
       selectedItem,
-      selectItem,
+            selectItem,
       createAccount,
+      addAccount,
+      requestAddAccount,
       unlock,
       lock,
       logout,
@@ -521,6 +564,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openWebsite,
       saveSettings,
       setUpdateChannel,
+
+
       renameVault,
       changeMasterPassword,
       refresh,

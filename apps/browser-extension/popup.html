@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Acuye Pass</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <span class="mark" aria-hidden="true">A</span>
+      <div class="bar-text">
+        <span class="title">Acuye Pass</span>
+        <span class="subtitle" id="subtitle">Local vault</span>
+      </div>
+      <button id="lock" class="ghost" type="button" hidden>Lock</button>
+    </header>
+
+    <main>
+      <section id="unlock-view" class="panel" hidden>
+        <label class="field">
+          <span>Account</span>
+          <select id="account"></select>
+        </label>
+        <label class="field">
+          <span>Master password</span>
+          <input id="password" type="password" autocomplete="current-password" />
+        </label>
+        <button id="unlock" class="primary" type="button">Unlock vault</button>
+        <p class="hint">The password is verified in the Rust process and never stored.</p>
+      </section>
+
+      <section id="vault-view" class="panel" hidden>
+        <input id="search" type="search" placeholder="Search logins" autocomplete="off" />
+        <ul id="items" class="items"></ul>
+        <p id="empty" class="hint" hidden>Nothing matches that search.</p>
+      </section>
+
+      <section id="error-view" class="panel" hidden>
+        <p class="error" id="error"></p>
+        <button id="retry" class="secondary" type="button">Try again</button>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span id="host-state">Native host</span>
+      <span>No cloud · No telemetry</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

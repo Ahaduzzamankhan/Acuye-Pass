@@ -10,10 +10,11 @@ pricing, features and help pages, checked **November 2026**; prices change, so
 treat the figures below as a snapshot.
 
 > **Read this first.** Acuye Pass is not a drop-in replacement for either
-> product yet. It is a Windows-only, local-first desktop vault with no browser
-> extension, no autofill, no cloud sync and no sharing. Where it wins is the
-> security model and the absence of a server. Where it loses is everything that
-> makes a password manager usable day to day.
+> product yet. It is a Windows-only, local-first desktop vault. It has an
+> optional Chrome extension that autofills a matching login, but no save
+> prompts, no passkeys, no cloud sync and no sharing.
+> Where it wins is the security model and the absence of a server. Where it loses
+> is everything that makes a password manager usable day to day.
 
 ## At a glance
 
@@ -21,7 +22,7 @@ treat the figures below as a snapshot.
 | --- | --- | --- | --- |
 | Category | Local-first desktop vault | Cloud (or self-hosted) password manager | Cloud-only password manager |
 | Platforms | Windows desktop (Tauri 2) | Windows, macOS, Linux, iOS, Android, web, CLI, all major browsers | Windows, macOS, Linux, iOS, Android, web, CLI, all major browsers |
-| Browser extension / autofill | **None** | Yes, full autofill | Yes, best-in-class autofill |
+| Browser extension / autofill | Chrome/Chromium MV3 extension: autofill for a matching login, 2FA codes, unpacked | Yes, full autofill | Yes, best-in-class autofill |
 | Price | Free (MIT) | Free tier; Premium $19.80/yr; Families $47.88/yr (6 users) | No free tier; Individual $3.99/mo yearly; Families $5.99/mo yearly (5 users) |
 | Account required | No | Yes (cloud) / yes (self-host) | Yes |
 | Data leaves the device | Only on manual export (plus opt-in update check and favicon fetch) | Synced to Bitwarden cloud or your server | Synced to 1Password cloud |
@@ -116,7 +117,7 @@ Notes that matter:
 | Password strength / reuse / age report | Yes (Security Center score) | Yes (vault health reports) | Yes (Watchtower) |
 | Breach monitoring | Yes (HIBP Pwned Passwords, k-anonymity, only 5 hash chars sent) | Yes (paid) | Yes (Watchtower alerts) |
 | Passkeys | **No** | Yes, including native Windows 11 / macOS providers | Yes |
-| Browser autofill | **No** | Yes | Yes (best in class) |
+| Browser autofill | Fills when a page host matches one saved login (or from the popup); no save prompts | Yes | Yes (best in class) |
 | SSH agent | No (stores SSH keys as secret items only) | Yes | Yes |
 | Import | Acuye JSON, Bitwarden JSON/CSV, Chrome/Edge CSV, 1Password CSV, generic CSV | Broad, incl. direct 1Password import | Broad |
 | Encrypted export | Yes (Argon2id + XChaCha20-Poly1305 envelope) | Yes | Yes (1PUX) |
@@ -146,7 +147,7 @@ Notes that matter:
 | Family | $0 (no sharing, so not comparable) | $47.88/yr, 6 users | $71.88/yr (~$5.99/mo), 5 users |
 | Small team | Not supported | Teams $4/user/mo | Teams Starter Pack $24.95/mo, up to 10 users |
 | Business / enterprise | Not supported | Enterprise $6/user/mo | Business $8.99/user/mo |
-| Hidden cost | Your time: no autofill, no sync, manual backups | Free tier upsells TOTP and attachments | No free tier at all |
+| Hidden cost | Your time: manual popup fill, no sync, manual backups | Free tier upsells TOTP and attachments | No free tier at all |
 
 Acuye Pass is free because it is a single-developer MIT project with no
 infrastructure to pay for. That is also its biggest risk: no revenue means no
@@ -157,7 +158,8 @@ security team, no audit budget and no support contract.
 **Acuye Pass wins on:**
 
 1. **Attack surface.** No server, no account, no telemetry, no third-party
-   favicon service. Two outbound request types exist at all (signed update
+   favicon service. The optional extension adds a local native-messaging host
+   and no network code. Two outbound request types exist at all (signed update
    check, opt-in favicon fetch), both host-restricted.
 2. **Zero-knowledge without trust in a vendor.** Nothing to breach, nothing to
    subpoena, nothing to leak. The vault is a SQLite file you own.
@@ -196,8 +198,8 @@ security team, no audit budget and no support contract.
 ## Honest verdict
 
 - **If you need a password manager today, for real accounts:** use Bitwarden.
-  It is open source, cheap, audited, and Acuye Pass cannot autofill a login or
-  sync to your phone.
+  It is open source, cheap, audited, and Acuye Pass has no automatic autofill,
+  no passkeys and no sync to your phone.
 - **If you value polish and will pay for it:** 1Password. The Secret Key and the
   autofill quality justify the price for many people.
 - **If you want a Windows-only, offline, no-account vault and you are willing to

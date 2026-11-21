@@ -80,7 +80,7 @@ pub fn storage_info(state: State<'_, AppState>) -> ApiResult<StorageInfo> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_backup(state: State<'_, AppState>) -> ApiResult<BackupInfo> {
     let core = lock_core(&state)?;
     let name = timestamp_name("acuye-backup", "db");
@@ -120,7 +120,7 @@ pub fn list_backups(state: State<'_, AppState>) -> ApiResult<Vec<BackupInfo>> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn restore_backup(state: State<'_, AppState>, name: String) -> ApiResult<()> {
     if name.contains('/') || name.contains('\\') || name.contains("..") || !name.ends_with(".db") {
         return Err(ApiError::validation("Invalid backup name"));
@@ -174,12 +174,12 @@ pub fn open_exports_folder(app: AppHandle, state: State<'_, AppState>) -> ApiRes
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_preview(payload: String, format: Option<ImportFormat>) -> ApiResult<ParsedImport> {
     Ok(acuye_import::parse(&payload, format)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_apply(
     state: State<'_, AppState>,
     items: Vec<Item>,
@@ -229,7 +229,7 @@ pub fn import_apply(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_encrypted(state: State<'_, AppState>, password: String) -> ApiResult<ExportInfo> {
     let mut core = lock_core(&state)?;
     let items = core.unlocked()?.unlocked.vault.items.clone();
@@ -246,7 +246,7 @@ pub fn export_encrypted(state: State<'_, AppState>, password: String) -> ApiResu
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_plaintext_csv(
     state: State<'_, AppState>,
     acknowledge_plaintext: bool,
@@ -270,7 +270,7 @@ pub fn export_plaintext_csv(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_encrypted(
     state: State<'_, AppState>,
     payload: String,
@@ -301,7 +301,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> ApiResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_favicon(state: State<'_, AppState>, url: String) -> ApiResult<Option<String>> {
     let (enabled, cache_dir) = {
         let core = lock_core(&state)?;

@@ -73,36 +73,78 @@ impl AuthService {
     }
 
     pub fn has_account(&self) -> Result<bool> {
-        Ok(self.db.load_account()?.is_some())
+        Ok(!self.db.load_accounts()?.is_empty())
     }
 
     pub fn account_summary(&self) -> Result<Option<AccountSummary>> {
-        Ok(self.db.load_account()?.map(|a| AccountSummary {
-            username: a.username,
-            vault_id: a.vault_id,
-            vault_name: a.vault_name,
-            kdf_algorithm: a.kdf_algorithm,
-            kdf_memory_kib: a.kdf_memory_kib,
-            kdf_iterations: a.kdf_iterations,
-            created_at: a.created_at,
-        }))
+        Ok(self.db.load_accounts()?.into_iter().next().map(summary_of))
     }
 
-    /// First-launch account creation. Refuses to overwrite an existing vault.
+    /// Every local account, oldest first. Metadata only — no key material.
+    pub fn accounts(&self) -> Result<Vec<AccountSummary>> {
+        Ok(self
+            .db
+            .load_accounts()?
+            .into_iter()
+            .map(summary_of)
+            .collect())
+    }
+
+    /// First-launch account creation. Refuses to overwrite an existing vault —
+    /// use [`Self::add_account`] to add a second one next to it.
     pub fn create_account(&self, username: &str, password: &str) -> Result<UnlockedVault> {
         if self.has_account()? {
             return Err(AcuyeError::Conflict(
                 "an account already exists on this device".into(),
             ));
         }
+        self.create_vault(username, password, acuye_vault::DEFAULT_VAULT_NAME)
+    }
+
+    /// Create an additional independent vault in the same database.
+    ///
+    /// Each account has its own username, salt, verifier, wrapped vault key and
+    /// items; nothing (including the master password) is shared.
+    pub fn add_account(
+        &self,
+        username: &str,
+        password: &str,
+        vault_name: Option<&str>,
+    ) -> Result<UnlockedVault> {
+        let accounts = self.accounts()?;
+        if accounts
+            .iter()
+            .any(|account| account.username.eq_ignore_ascii_case(username.trim()))
+        {
+            return Err(AcuyeError::Conflict(
+                "an account with that name already exists".into(),
+            ));
+        }
+        let name = match vault_name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) => name.to_string(),
+            None => next_vault_name(&accounts),
+        };
+        self.create_vault(username, password, &name)
+    }
+
+    fn create_vault(
+        &self,
+        username: &str,
+        password: &str,
+        vault_name: &str,
+    ) -> Result<UnlockedVault> {
         let username = normalize_username(username)?;
         validate_master_password(password, &username)?;
+        let vault_name = vault_name.trim();
+        if vault_name.is_empty() || vault_name.chars().count() > 64 {
+            return Err(AcuyeError::Validation("Invalid vault name".into()));
+        }
 
         let salt = random_salt();
         let master = derive_master_key(password, &salt, &self.kdf)?;
         let keys = ExpandedKeys::derive(&master)?;
         let verifier = auth_verifier(&keys.auth_key);
-        let vault = VaultModel::new(acuye_vault::DEFAULT_VAULT_NAME);
+        let vault = VaultModel::new(vault_name);
         let vault_key = SecretKey::generate();
         let wrapped = wrap_vault_key(&keys.wrapping_key, &vault_key, &vault.id)?;
         let now = acuye_core::time::now();
@@ -131,22 +173,44 @@ impl AuthService {
         })
     }
 
-    /// Unlock an existing vault. Username comparison is case-insensitive;
-    /// every failure returns the same error so account existence is not leaked.
+    /// Unlock the vault that belongs to `username`. Username comparison is
+    /// case-insensitive; every failure returns the same error so account
+    /// existence is not leaked. When several vaults share a username the caller
+    /// must use [`Self::unlock_vault`] instead.
     pub fn unlock(&self, username: &str, password: &str) -> Result<UnlockedVault> {
-        let record = self
-            .db
-            .load_account()?
-            .ok_or(AcuyeError::AuthenticationFailed)?;
-        if !record.username.eq_ignore_ascii_case(username.trim()) {
-            // Still run the KDF to keep timing roughly constant.
-            let params = params_of(&record)?;
-            let _ = derive_master_key(password, &record.salt, &params);
-            return Err(AcuyeError::AuthenticationFailed);
+        let accounts = self.db.load_accounts()?;
+        let matches: Vec<&AccountRecord> = accounts
+            .iter()
+            .filter(|account| account.username.eq_ignore_ascii_case(username.trim()))
+            .collect();
+        match matches.as_slice() {
+            [] => {
+                // Still run the KDF to keep timing roughly constant.
+                burn_kdf(accounts.first(), password);
+                Err(AcuyeError::AuthenticationFailed)
+            }
+            [record] => self.unlock_record(record, password),
+            _ => Err(AcuyeError::Conflict(
+                "more than one vault uses that account name — choose one".into(),
+            )),
         }
-        let params = params_of(&record)?;
-        let salt = record.salt.clone();
-        let master = derive_master_key(password, &salt, &params)?;
+    }
+
+    /// Unlock one specific vault by id (the account picker's choice).
+    pub fn unlock_vault(&self, vault_id: &str, password: &str) -> Result<UnlockedVault> {
+        let accounts = self.db.load_accounts()?;
+        match accounts.iter().find(|account| account.vault_id == vault_id) {
+            Some(record) => self.unlock_record(record, password),
+            None => {
+                burn_kdf(accounts.first(), password);
+                Err(AcuyeError::AuthenticationFailed)
+            }
+        }
+    }
+
+    fn unlock_record(&self, record: &AccountRecord, password: &str) -> Result<UnlockedVault> {
+        let params = params_of(record)?;
+        let master = derive_master_key(password, &record.salt, &params)?;
         let keys = ExpandedKeys::derive(&master)?;
         let verifier = auth_verifier(&keys.auth_key);
         if !verifiers_match(&record.verifier, &verifier)? {
@@ -180,7 +244,7 @@ impl AuthService {
         acuye_vault::decrypt_all(&vault_key, &mut vault, pairs)?;
 
         Ok(UnlockedVault {
-            username: record.username,
+            username: record.username.clone(),
             vault,
             vault_key,
         })
@@ -193,12 +257,13 @@ impl AuthService {
     /// in a single SQLite transaction. The old password stops working.
     pub fn change_master_password(
         &mut self,
+        vault_id: &str,
         current_password: &str,
         new_password: &str,
     ) -> Result<UnlockedVault> {
         let record = self
             .db
-            .load_account()?
+            .load_account_by_vault(vault_id)?
             .ok_or_else(|| AcuyeError::NotFound("account".into()))?;
         let params = params_of(&record)?;
         let master = derive_master_key(current_password, &record.salt, &params)?;
@@ -284,7 +349,12 @@ impl AuthService {
 
     /// Update the stored vault name. Requires proof that the caller holds an
     /// unlocked session (`vault_key`) even though the name itself is metadata.
-    pub fn rename_vault(&mut self, vault_key: &SecretKey, name: &str) -> Result<()> {
+    pub fn rename_vault(
+        &mut self,
+        vault_id: &str,
+        vault_key: &SecretKey,
+        name: &str,
+    ) -> Result<()> {
         let trimmed = name.trim();
         if trimmed.is_empty() || trimmed.chars().count() > 64 {
             return Err(AcuyeError::Validation("Invalid vault name".into()));
@@ -295,7 +365,7 @@ impl AuthService {
         }
         let mut record = self
             .db
-            .load_account()?
+            .load_account_by_vault(vault_id)?
             .ok_or_else(|| AcuyeError::NotFound("account".into()))?;
         record.vault_name = trimmed.to_string();
         record.updated_at = acuye_core::time::now();
@@ -305,6 +375,47 @@ impl AuthService {
 
     pub fn now(&self) -> Timestamp {
         acuye_core::time::now()
+    }
+}
+
+fn summary_of(record: AccountRecord) -> AccountSummary {
+    AccountSummary {
+        username: record.username,
+        vault_id: record.vault_id,
+        vault_name: record.vault_name,
+        kdf_algorithm: record.kdf_algorithm,
+        kdf_memory_kib: record.kdf_memory_kib,
+        kdf_iterations: record.kdf_iterations,
+        created_at: record.created_at,
+    }
+}
+
+/// Next free default vault name: "Personal", "Personal 2", …
+fn next_vault_name(accounts: &[AccountSummary]) -> String {
+    let mut index = 1usize;
+    loop {
+        let candidate = if index == 1 {
+            "Personal".to_string()
+        } else {
+            format!("Personal {index}")
+        };
+        if !accounts
+            .iter()
+            .any(|account| account.vault_name == candidate)
+        {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+/// Run one key derivation for a failed lookup so a missing account costs the
+/// same wall-clock time as a wrong password.
+fn burn_kdf(record: Option<&AccountRecord>, password: &str) {
+    if let Some(record) = record {
+        if let Ok(params) = params_of(record) {
+            let _ = derive_master_key(password, &record.salt, &params);
+        }
     }
 }
 
@@ -468,7 +579,9 @@ mod tests {
             .clone();
 
         let new_password = "an-even-better-passphrase-99";
-        let rotated = auth.change_master_password(PASSWORD, new_password).unwrap();
+        let rotated = auth
+            .change_master_password(&unlocked.vault.id, PASSWORD, new_password)
+            .unwrap();
         assert_eq!(rotated.vault.items.len(), 1);
         let new_ciphertext = auth.db.load_items(&unlocked.vault.id).unwrap()[0]
             .ciphertext
@@ -486,12 +599,59 @@ mod tests {
     #[test]
     fn password_change_requires_current_password() {
         let mut auth = service();
-        auth.create_account("ada", PASSWORD).unwrap();
+        let unlocked = auth.create_account("ada", PASSWORD).unwrap();
         assert!(matches!(
-            auth.change_master_password("wrong-password-here", "another-good-password-1"),
+            auth.change_master_password(
+                &unlocked.vault.id,
+                "wrong-password-here",
+                "another-good-password-1"
+            ),
             Err(AcuyeError::AuthenticationFailed)
         ));
-        assert!(auth.change_master_password(PASSWORD, PASSWORD).is_err());
+        assert!(auth
+            .change_master_password(&unlocked.vault.id, PASSWORD, PASSWORD)
+            .is_err());
+    }
+
+    #[test]
+    fn additional_accounts_are_independent() {
+        let auth = service();
+        let mut work = auth.create_account("ada", PASSWORD).unwrap();
+        let item = work.vault.add(login()).unwrap();
+        auth.db
+            .upsert_item(&work.encrypt_item(&item).unwrap())
+            .unwrap();
+
+        let other_password = "Quartz-Meadow-4471-Lantern";
+        let personal = auth
+            .add_account("grace", other_password, Some("Personal"))
+            .unwrap();
+        assert_eq!(personal.vault.name, "Personal");
+        assert!(personal.vault.items.is_empty());
+        assert_eq!(auth.accounts().unwrap().len(), 2);
+
+        // A username identifies one vault, so it cannot be added twice.
+        assert!(matches!(
+            auth.add_account("ADA", PASSWORD, None),
+            Err(AcuyeError::Conflict(_))
+        ));
+
+        // Each vault only opens with its own master password.
+        assert!(matches!(
+            auth.unlock_vault(&personal.vault.id, PASSWORD),
+            Err(AcuyeError::AuthenticationFailed)
+        ));
+        let reopened = auth
+            .unlock_vault(&personal.vault.id, other_password)
+            .unwrap();
+        assert_eq!(reopened.vault.name, "Personal");
+
+        let work_again = auth.unlock("ada", PASSWORD).unwrap();
+        assert_eq!(work_again.vault.items.len(), 1);
+        assert!(matches!(
+            auth.unlock_vault("missing-vault", PASSWORD),
+            Err(AcuyeError::AuthenticationFailed)
+        ));
     }
 
     #[test]
@@ -535,8 +695,11 @@ mod tests {
     fn rename_vault_persists() {
         let mut auth = service();
         let unlocked = auth.create_account("ada", PASSWORD).unwrap();
-        auth.rename_vault(&unlocked.vault_key, "Work").unwrap();
+        auth.rename_vault(&unlocked.vault.id, &unlocked.vault_key, "Work")
+            .unwrap();
         assert_eq!(auth.account_summary().unwrap().unwrap().vault_name, "Work");
-        assert!(auth.rename_vault(&unlocked.vault_key, "  ").is_err());
+        assert!(auth
+            .rename_vault(&unlocked.vault.id, &unlocked.vault_key, "  ")
+            .is_err());
     }
 }

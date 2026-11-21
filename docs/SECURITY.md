@@ -57,7 +57,45 @@ local:
 2. Optional LAN pairing: Noise XX handshake plus a vault-key-derived proof.
 
 Failure is uniform: the unlock screen reports "incorrect username or password"
-without distinguishing which part was wrong.
+without distinguishing which part was wrong. A failed account lookup still runs
+one Argon2id derivation so a missing account does not answer faster.
+
+## Multiple accounts
+
+- Each account is stored as its own row with independent salt, verifier and
+  wrapped vault key. Nothing derived from one master password can open another
+  vault.
+- Vault ids are random UUIDs generated at creation and are used as associated
+  data for item encryption, so a ciphertext cannot be moved between accounts.
+- Only one vault is decrypted at a time: creating an account or switching drops
+  the previous session first.
+- Master-password rotation, rename and re-encryption operate on the vault of the
+  open session only; other accounts are untouched.
+- The unlock screen exposes usernames and vault names for local accounts. That is
+  local metadata, the same data already stored in the plaintext `accounts` table,
+  and it is what makes the account picker possible.
+
+## Browser extension host
+
+`acuye-browser-host` is a separate process launched by the browser through native
+messaging. It is the only code path outside the desktop app that opens the
+database.
+
+- It opens the same SQLite file read/write (the storage layer needs that to
+  migrate), but issues no writes of its own: no account creation, no item edits.
+- The master password arrives on stdin, is used for a single unlock, and is not
+  stored. Derived keys stay in the host process.
+- The host exits when the browser closes the port, and drops its session after 10
+  minutes without requests. No key material is written to disk or to logs.
+- Frames are length-prefixed and capped at 1 MiB in both directions; malformed
+  frames terminate the process.
+- The native host manifest lists the exact extension id in `allowed_origins`, so
+  other extensions cannot launch it.
+- The extension requests only `nativeMessaging`, `activeTab` and `scripting`. It
+  declares no host permissions and contains no network code.
+- Passwords are injected into the page's own inputs, which means page scripts can
+  read them. That is inherent to form filling without a privileged fill API and
+  is not mitigated here.
 
 ## Updates
 
@@ -129,7 +167,10 @@ before disclosure.
 
 ## Known limitations
 
-- No independent security audit yet.
+- No independent security audit yet, and the browser extension has not been
+  reviewed by any browser vendor (it is loaded unpacked).
+- The extension's fill target is the first visible password field; pages that
+  hide the form in closed shadow roots or unusual widgets are not filled.
 - Clipboard contents are readable by other applications until the clear timer fires.
 - Screenshots, screen recording and memory inspection of an unlocked vault are
   outside the threat model.

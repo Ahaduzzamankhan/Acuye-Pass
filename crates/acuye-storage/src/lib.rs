@@ -15,7 +15,7 @@ use std::time::Duration;
 use acuye_core::{AccountRecord, AcuyeError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 /// XChaCha20-Poly1305 nonce length. Rows must match exactly; a longer nonce can
 /// never be opened and would only surface as a failed unlock.
 pub const NONCE_LEN: usize = 24;
@@ -112,6 +112,39 @@ const MIGRATIONS: &[&str] = &[
         at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_secret_access_item ON secret_access(item_id);
+    "#,
+    // v4: multiple local accounts. `accounts` used to be a singleton row
+    // (`id = 1`); each row is now keyed by its vault id so several vaults can
+    // live side by side in one database. Items already carry a vault id, so no
+    // item or setting row is touched.
+    r#"
+    CREATE TABLE accounts_v4 (
+        id TEXT PRIMARY KEY NOT NULL,
+        username TEXT NOT NULL,
+        kdf_algorithm TEXT NOT NULL,
+        kdf_memory_kib INTEGER NOT NULL,
+        kdf_iterations INTEGER NOT NULL,
+        kdf_parallelism INTEGER NOT NULL,
+        salt BLOB NOT NULL,
+        verifier BLOB NOT NULL,
+        wrapped_vault_key BLOB NOT NULL,
+        vault_key_nonce BLOB NOT NULL,
+        vault_id TEXT NOT NULL UNIQUE,
+        vault_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+
+    INSERT INTO accounts_v4 (id, username, kdf_algorithm, kdf_memory_kib,
+        kdf_iterations, kdf_parallelism, salt, verifier, wrapped_vault_key,
+        vault_key_nonce, vault_id, vault_name, created_at, updated_at)
+    SELECT vault_id, username, kdf_algorithm, kdf_memory_kib, kdf_iterations,
+        kdf_parallelism, salt, verifier, wrapped_vault_key, vault_key_nonce,
+        vault_id, vault_name, created_at, updated_at
+    FROM accounts;
+
+    DROP TABLE accounts;
+    ALTER TABLE accounts_v4 RENAME TO accounts;
     "#,
 ];
 
@@ -250,43 +283,59 @@ impl Database {
 
     // ----- account ---------------------------------------------------------
 
-    pub fn load_account(&self) -> Result<Option<AccountRecord>> {
-        self.conn
-            .query_row(
+    /// Every local account, oldest first. One row per vault.
+    pub fn load_accounts(&self) -> Result<Vec<AccountRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
                 "SELECT username, kdf_algorithm, kdf_memory_kib, kdf_iterations,
                         kdf_parallelism, salt, verifier, wrapped_vault_key,
                         vault_key_nonce, vault_id, vault_name, created_at, updated_at
-                 FROM accounts WHERE id = 1",
-                [],
-                |row| {
-                    Ok(AccountRecord {
-                        username: row.get(0)?,
-                        kdf_algorithm: row.get(1)?,
-                        kdf_memory_kib: row.get(2)?,
-                        kdf_iterations: row.get(3)?,
-                        kdf_parallelism: row.get(4)?,
-                        salt: row.get(5)?,
-                        verifier: row.get(6)?,
-                        wrapped_vault_key: row.get(7)?,
-                        vault_key_nonce: row.get(8)?,
-                        vault_id: row.get(9)?,
-                        vault_name: row.get(10)?,
-                        created_at: row.get(11)?,
-                        updated_at: row.get(12)?,
-                    })
-                },
+                 FROM accounts ORDER BY created_at ASC, username ASC",
             )
-            .optional()
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AccountRecord {
+                    username: row.get(0)?,
+                    kdf_algorithm: row.get(1)?,
+                    kdf_memory_kib: row.get(2)?,
+                    kdf_iterations: row.get(3)?,
+                    kdf_parallelism: row.get(4)?,
+                    salt: row.get(5)?,
+                    verifier: row.get(6)?,
+                    wrapped_vault_key: row.get(7)?,
+                    vault_key_nonce: row.get(8)?,
+                    vault_id: row.get(9)?,
+                    vault_name: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                })
+            })
+            .map_err(storage_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(storage_err)
     }
 
-    /// Create the single local account. Fails if one already exists — Acuye
-    /// Pass never silently overwrites an existing vault.
+    /// The first local account. Kept for callers that only need "the" account
+    /// (diagnostics, the browser host); use [`Self::load_accounts`] to list all.
+    pub fn load_account(&self) -> Result<Option<AccountRecord>> {
+        Ok(self.load_accounts()?.into_iter().next())
+    }
+
+    /// Look one account up by vault id.
+    pub fn load_account_by_vault(&self, vault_id: &str) -> Result<Option<AccountRecord>> {
+        Ok(self
+            .load_accounts()?
+            .into_iter()
+            .find(|account| account.vault_id == vault_id))
+    }
+
+    /// Store one account. Several accounts may coexist; the vault id is the
+    /// account id, so the same vault can never be inserted twice.
     pub fn insert_account(&self, account: &AccountRecord) -> Result<()> {
-        if self.load_account()?.is_some() {
-            return Err(AcuyeError::Conflict(
-                "an account already exists on this device".into(),
-            ));
+        if self.load_account_by_vault(&account.vault_id)?.is_some() {
+            return Err(AcuyeError::Conflict("that vault already exists".into()));
         }
         self.conn
             .execute(
@@ -294,8 +343,9 @@ impl Database {
                     kdf_iterations, kdf_parallelism, salt, verifier,
                     wrapped_vault_key, vault_key_nonce, vault_id, vault_name,
                     created_at, updated_at)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
+                    account.vault_id,
                     account.username,
                     account.kdf_algorithm,
                     account.kdf_memory_kib,
@@ -323,9 +373,8 @@ impl Database {
                 "UPDATE accounts SET username = ?1, kdf_algorithm = ?2,
                     kdf_memory_kib = ?3, kdf_iterations = ?4, kdf_parallelism = ?5,
                     salt = ?6, verifier = ?7, wrapped_vault_key = ?8,
-                    vault_key_nonce = ?9, vault_id = ?10, vault_name = ?11,
-                    updated_at = ?12
-                 WHERE id = 1",
+                    vault_key_nonce = ?9, vault_name = ?10, updated_at = ?11
+                 WHERE vault_id = ?12",
                 params![
                     account.username,
                     account.kdf_algorithm,
@@ -336,9 +385,9 @@ impl Database {
                     account.verifier,
                     account.wrapped_vault_key,
                     account.vault_key_nonce,
-                    account.vault_id,
                     account.vault_name,
                     account.updated_at,
+                    account.vault_id,
                 ],
             )
             .map_err(storage_err)?;
@@ -444,7 +493,12 @@ impl Database {
         items: &[StoredItem],
     ) -> Result<()> {
         let tx = self.conn.transaction().map_err(storage_err)?;
-        tx.execute("DELETE FROM items", []).map_err(storage_err)?;
+        // Only this vault's items are rewritten: other accounts share the table.
+        tx.execute(
+            "DELETE FROM items WHERE vault_id = ?1",
+            params![account.vault_id],
+        )
+        .map_err(storage_err)?;
         {
             let mut stmt = tx
                 .prepare(
@@ -467,7 +521,7 @@ impl Database {
             "UPDATE accounts SET kdf_algorithm = ?1, kdf_memory_kib = ?2,
                 kdf_iterations = ?3, kdf_parallelism = ?4, salt = ?5,
                 verifier = ?6, wrapped_vault_key = ?7, vault_key_nonce = ?8,
-                updated_at = ?9 WHERE id = 1",
+                updated_at = ?9 WHERE vault_id = ?10",
             params![
                 account.kdf_algorithm,
                 account.kdf_memory_kib,
@@ -478,6 +532,7 @@ impl Database {
                 account.wrapped_vault_key,
                 account.vault_key_nonce,
                 account.updated_at,
+                account.vault_id,
             ],
         )
         .map_err(storage_err)?;
@@ -882,10 +937,14 @@ impl Database {
             conn: source,
             path: None,
         };
-        let account = source_db
-            .load_account()?
-            .ok_or_else(|| AcuyeError::Storage("backup has no account".into()))?;
-        let items = source_db.load_items(&account.vault_id)?;
+        let accounts = source_db.load_accounts()?;
+        if accounts.is_empty() {
+            return Err(AcuyeError::Storage("backup has no account".into()));
+        }
+        let mut items = Vec::new();
+        for account in &accounts {
+            items.extend(source_db.load_items(&account.vault_id)?);
+        }
         let settings = source_db.settings_map()?;
         // The device list and sync bookkeeping describe this vault too, so the
         // restore would otherwise mix a stale device registry (including
@@ -911,28 +970,36 @@ impl Database {
             .map_err(storage_err)?;
         tx.execute("DELETE FROM secret_access", [])
             .map_err(storage_err)?;
-        tx.execute(
-            "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
-                kdf_iterations, kdf_parallelism, salt, verifier, wrapped_vault_key,
-                vault_key_nonce, vault_id, vault_name, created_at, updated_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                account.username,
-                account.kdf_algorithm,
-                account.kdf_memory_kib,
-                account.kdf_iterations,
-                account.kdf_parallelism,
-                account.salt,
-                account.verifier,
-                account.wrapped_vault_key,
-                account.vault_key_nonce,
-                account.vault_id,
-                account.vault_name,
-                account.created_at,
-                account.updated_at,
-            ],
-        )
-        .map_err(storage_err)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO accounts (id, username, kdf_algorithm, kdf_memory_kib,
+                        kdf_iterations, kdf_parallelism, salt, verifier,
+                        wrapped_vault_key, vault_key_nonce, vault_id, vault_name,
+                        created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                )
+                .map_err(storage_err)?;
+            for account in &accounts {
+                stmt.execute(params![
+                    account.vault_id,
+                    account.username,
+                    account.kdf_algorithm,
+                    account.kdf_memory_kib,
+                    account.kdf_iterations,
+                    account.kdf_parallelism,
+                    account.salt,
+                    account.verifier,
+                    account.wrapped_vault_key,
+                    account.vault_key_nonce,
+                    account.vault_id,
+                    account.vault_name,
+                    account.created_at,
+                    account.updated_at,
+                ])
+                .map_err(storage_err)?;
+            }
+        }
         {
             let mut stmt = tx
                 .prepare(
@@ -1188,6 +1255,83 @@ mod tests {
         updated.updated_at = 200;
         db.update_account(&updated).unwrap();
         assert_eq!(db.load_account().unwrap().unwrap().updated_at, 200);
+    }
+
+    #[test]
+    fn several_accounts_share_the_table_by_vault_id() {
+        let mut db = Database::open_in_memory().unwrap();
+        db.insert_account(&account()).unwrap();
+        let mut other = account();
+        other.username = "grace".into();
+        other.vault_id = "vault-2".into();
+        db.insert_account(&other).unwrap();
+
+        let accounts = db.load_accounts().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[1].vault_id, "vault-2");
+        assert_eq!(
+            db.load_account_by_vault("vault-2")
+                .unwrap()
+                .unwrap()
+                .username,
+            "grace"
+        );
+
+        // Rotation touches only the vault it belongs to.
+        let mut rotated = other.clone();
+        rotated.updated_at = 200;
+        db.replace_vault_items(&rotated, &[]).unwrap();
+        assert_eq!(
+            db.load_account_by_vault("vault-1")
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            100
+        );
+        assert_eq!(
+            db.load_account_by_vault("vault-2")
+                .unwrap()
+                .unwrap()
+                .updated_at,
+            200
+        );
+    }
+
+    #[test]
+    fn v3_single_account_migrates_to_a_vault_keyed_row() {
+        let dir = temp_dir();
+        let path = dir.join("acuye.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE accounts (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    username TEXT NOT NULL UNIQUE,
+                    kdf_algorithm TEXT NOT NULL,
+                    kdf_memory_kib INTEGER NOT NULL,
+                    kdf_iterations INTEGER NOT NULL,
+                    kdf_parallelism INTEGER NOT NULL,
+                    salt BLOB NOT NULL,
+                    verifier BLOB NOT NULL,
+                    wrapped_vault_key BLOB NOT NULL,
+                    vault_key_nonce BLOB NOT NULL,
+                    vault_id TEXT NOT NULL,
+                    vault_name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO accounts VALUES (1, 'ada', 'argon2id', 65536, 3, 1,
+                    x'01', x'02', x'03', x'04', 'vault-1', 'Personal', 100, 100);
+                PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        let migrated = db.load_account().unwrap().unwrap();
+        assert_eq!(migrated.username, "ada");
+        assert_eq!(migrated.vault_id, "vault-1");
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -1,0 +1,19 @@
+[package]
+name = "acuye-browser-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "acuye-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+acuye-core = { workspace = true }
+acuye-crypto = { workspace = true }
+acuye-auth = { workspace = true }
+acuye-storage = { workspace = true }
+acuye-totp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

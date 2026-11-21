@@ -136,8 +136,17 @@ fn parse_acuye_json(payload: &str) -> Result<ParsedImport> {
 
 #[derive(Debug, Deserialize)]
 struct BitwardenJson {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     items: Vec<BitwardenItem>,
+}
+
+/// Bitwarden writes `"items": null` for an empty vault. Treat null as empty.
+fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +166,23 @@ struct BitwardenItem {
     card: Option<BitwardenCard>,
     #[serde(default)]
     identity: Option<BitwardenIdentity>,
+    /// Custom fields: `{ name, value, type }`, type 1 meaning hidden.
+    #[serde(default)]
+    fields: Vec<BitwardenField>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BitwardenField {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BitwardenUri {
+    #[serde(default)]
+    uri: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -165,8 +191,12 @@ struct BitwardenLogin {
     username: Option<String>,
     #[serde(default)]
     password: Option<String>,
+    /// Older exports used a single `uri`; current Bitwarden versions always
+    /// write `uris: [{ match, uri }]`.
     #[serde(default)]
     uri: Option<String>,
+    #[serde(default)]
+    uris: Vec<BitwardenUri>,
     #[serde(default)]
     totp: Option<String>,
 }
@@ -215,10 +245,65 @@ fn opt(value: Option<String>) -> String {
     value.unwrap_or_default()
 }
 
+/// First non-empty URI of a Bitwarden login, tolerating both export shapes.
+fn primary_uri(login: &BitwardenLogin) -> String {
+    login
+        .uris
+        .iter()
+        .filter_map(|entry| entry.uri.as_deref())
+        .map(str::trim)
+        .find(|uri| !uri.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            login
+                .uri
+                .as_deref()
+                .map(str::trim)
+                .filter(|uri| !uri.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// Append unsupported Bitwarden custom fields to the item's notes instead of
+/// dropping them silently. Returns true when anything was appended.
+fn append_custom_fields<'a>(
+    item: &mut Item,
+    fields: impl Iterator<Item = (&'a str, &'a str)>,
+) -> bool {
+    let lines: Vec<String> = fields
+        .map(|(name, value)| (name.trim(), value.trim()))
+        .filter(|(name, value)| !name.is_empty() || !value.is_empty())
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect();
+    if lines.is_empty() {
+        return false;
+    }
+    if !item.notes.trim().is_empty() {
+        item.notes.push('\n');
+    }
+    item.notes.push_str("Custom fields\n");
+    for line in lines {
+        item.notes.push_str(&line);
+        item.notes.push('\n');
+    }
+    true
+}
+
+fn bitwarden_field_pairs(fields: &[BitwardenField]) -> impl Iterator<Item = (&str, &str)> {
+    fields.iter().map(|field| {
+        (
+            field.name.as_deref().unwrap_or(""),
+            field.value.as_deref().unwrap_or(""),
+        )
+    })
+}
+
 fn parse_bitwarden_json(payload: &str) -> Result<ParsedImport> {
     let export: BitwardenJson = serde_json::from_str(payload).map_err(|_| AcuyeError::Format)?;
     let mut items = Vec::new();
     let mut skipped = 0;
+    let mut warnings = Vec::new();
     for entry in export.items {
         if entry.name.trim().is_empty() {
             skipped += 1;
@@ -276,10 +361,11 @@ fn parse_bitwarden_json(payload: &str) -> Result<ParsedImport> {
             Some(2) => ItemFields::SecureNote {},
             _ => {
                 let login = entry.login.unwrap_or_default();
+                let url = primary_uri(&login);
                 ItemFields::Login {
                     username: opt(login.username),
                     password: opt(login.password),
-                    url: opt(login.uri),
+                    url,
                     totp: opt(login.totp),
                     password_changed_at: None,
                 }
@@ -288,6 +374,9 @@ fn parse_bitwarden_json(payload: &str) -> Result<ParsedImport> {
         let mut item = Item::new(fields, entry.name);
         item.notes = opt(entry.notes);
         item.favorite = entry.favorite;
+        if append_custom_fields(&mut item, bitwarden_field_pairs(&entry.fields)) {
+            warnings.push("Custom fields were appended to item notes".into());
+        }
         item.normalize();
         if item.validate().is_ok() {
             items.push(item);
@@ -299,7 +388,7 @@ fn parse_bitwarden_json(payload: &str) -> Result<ParsedImport> {
         format: ImportFormat::BitwardenJson,
         items,
         skipped,
-        warnings: Vec::new(),
+        warnings: dedupe(warnings),
     })
 }
 
@@ -358,6 +447,8 @@ fn find_column(headers: &[String], names: &[&str]) -> Option<usize> {
 }
 
 fn parse_csv(payload: &str, format: ImportFormat) -> Result<ParsedImport> {
+    // Excel and Bitwarden CSV exports often start with a UTF-8 BOM.
+    let payload = payload.strip_prefix('\u{feff}').unwrap_or(payload);
     let rows = parse_csv_rows(payload);
     if rows.is_empty() {
         return Err(AcuyeError::Format);
@@ -372,6 +463,7 @@ fn parse_csv(payload: &str, format: ImportFormat) -> Result<ParsedImport> {
     let fav_col = find_column(&headers, &["favorite"]);
     let type_col = find_column(&headers, &["type"]);
     let totp_col = find_column(&headers, &["login_totp", "otp", "totp", "otpauth"]);
+    let fields_col = find_column(&headers, &["fields", "custom_fields"]);
 
     let cell = |row: &[String], index: Option<usize>| -> String {
         index
@@ -382,29 +474,49 @@ fn parse_csv(payload: &str, format: ImportFormat) -> Result<ParsedImport> {
 
     let mut items = Vec::new();
     let mut skipped = 0;
-    let warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     for row in rows.iter().skip(1) {
         let title = cell(row, Some(title_col));
         if title.is_empty() {
             skipped += 1;
             continue;
         }
-        let is_note = type_col
-            .map(|i| cell(row, Some(i)).eq_ignore_ascii_case("note"))
-            .unwrap_or(false);
-        let fields = if is_note {
-            ItemFields::SecureNote {}
-        } else {
-            ItemFields::Login {
+        let kind = type_col
+            .map(|i| cell(row, Some(i)).to_lowercase())
+            .unwrap_or_default();
+        let fields = match kind.as_str() {
+            "note" | "secure_note" | "securenote" => ItemFields::SecureNote {},
+            // Bitwarden's CSV has no card/identity columns, so keep the row as a
+            // note (with whatever is in its fields column) instead of turning a
+            // card into a login with no username or password.
+            "card" | "identity" => {
+                warnings.push(format!(
+                    "\"{title}\" is a {kind}; the CSV has no fields for it and it was imported as a secure note"
+                ));
+                ItemFields::SecureNote {}
+            }
+            _ => ItemFields::Login {
                 username: cell(row, username_col),
                 password: cell(row, password_col),
                 url: cell(row, url_col),
                 totp: cell(row, totp_col),
                 password_changed_at: None,
-            }
+            },
         };
         let mut item = Item::new(fields, title);
         item.notes = cell(row, notes_col);
+        let raw_fields = cell(row, fields_col);
+        if !raw_fields.is_empty() {
+            let pairs = bitwarden_fields_from_json(&raw_fields);
+            if append_custom_fields(
+                &mut item,
+                pairs
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            ) {
+                warnings.push("Custom fields were appended to item notes".into());
+            }
+        }
         item.favorite = matches!(
             cell(row, fav_col).to_lowercase().as_str(),
             "1" | "true" | "yes"
@@ -425,6 +537,23 @@ fn parse_csv(payload: &str, format: ImportFormat) -> Result<ParsedImport> {
         skipped,
         warnings: dedupe(warnings),
     })
+}
+
+/// Bitwarden's CSV `fields` column is a JSON array of `{ name, value, type }`.
+fn bitwarden_fields_from_json(raw: &str) -> Vec<(String, String)> {
+    serde_json::from_str::<Vec<BitwardenField>>(raw)
+        .map(|fields| {
+            fields
+                .into_iter()
+                .map(|field| {
+                    (
+                        field.name.unwrap_or_default(),
+                        field.value.unwrap_or_default(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn dedupe(values: Vec<String>) -> Vec<String> {
@@ -474,6 +603,48 @@ mod tests {
         } else {
             panic!("expected login");
         }
+    }
+
+    #[test]
+    fn bitwarden_json_reads_uris_and_custom_fields() {
+        // Current Bitwarden exports keep the URL in `uris` and custom fields in
+        // `fields`; both used to be dropped on import.
+        let payload = r#"{"items":[
+            {"type":1,"name":"GitHub","favorite":false,
+             "login":{"username":"ada","password":"pw",
+                      "uris":[{"match":null,"uri":"https://github.com/login"}],
+                      "totp":""},
+             "fields":[{"name":"PIN","value":"1234","type":1}]}
+        ]}"#;
+        let parsed = parse(payload, None).unwrap();
+        assert_eq!(parsed.items.len(), 1);
+        match &parsed.items[0].fields {
+            ItemFields::Login { url, username, .. } => {
+                assert_eq!(url, "https://github.com/login");
+                assert_eq!(username, "ada");
+            }
+            other => panic!("expected login, got {other:?}"),
+        }
+        assert!(parsed.items[0].notes.contains("PIN: 1234"));
+        assert!(!parsed.warnings.is_empty());
+    }
+
+    #[test]
+    fn bitwarden_json_tolerates_null_items() {
+        let parsed = parse("{\"items\": null}", None).unwrap();
+        assert!(parsed.items.is_empty());
+    }
+
+    #[test]
+    fn bitwarden_csv_strips_bom_and_keeps_types() {
+        let payload = "\u{feff}folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\nWork,1,login,Mail,,,0,https://mail.example.com,ada,mailpass,\n,0,note,Memo,remember this,,0,,,,,\n,0,card,Visa,,,0,,,,,\n";
+        let parsed = parse(payload, None).unwrap();
+        assert_eq!(parsed.format, ImportFormat::BitwardenCsv);
+        assert_eq!(parsed.items.len(), 3);
+        assert_eq!(parsed.items[0].item_type(), ItemType::Login);
+        assert_eq!(parsed.items[1].item_type(), ItemType::SecureNote);
+        assert_eq!(parsed.items[2].item_type(), ItemType::SecureNote);
+        assert!(parsed.warnings.iter().any(|w| w.contains("Visa")));
     }
 
     #[test]

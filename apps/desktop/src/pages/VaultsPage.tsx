@@ -1,4 +1,4 @@
-import { Database, HardDrive, Lock, Pencil, ShieldCheck, Vault } from "lucide-react";
+import { Database, HardDrive, Lock, Pencil, ShieldCheck, UserPlus, Vault } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { useApp } from "@/lib/app-context";
@@ -10,7 +10,7 @@ import { Badge, Button, Field, Input } from "@/components/ui";
 
 export function VaultsPage() {
   const backend = useBackend();
-  const { session, counts, lock, renameVault, showToast } = useApp();
+  const { session, accounts, counts, lock, renameVault, requestAddAccount, showToast } = useApp();
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -54,7 +54,9 @@ export function VaultsPage() {
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background">
       <div className="mx-auto w-full max-w-3xl px-8 py-8">
         <h1 className="text-[22px] font-semibold tracking-[-0.02em]">Vaults</h1>
-        <p className="mt-1 text-[13px] text-muted-foreground">One encrypted vault on this device.</p>
+        <p className="mt-1 text-[13px] text-muted-foreground">
+          One encrypted database, one vault per account.
+        </p>
 
         <section className="mt-6 overflow-hidden rounded-xl border border-border bg-surface">
           <div className="flex items-start gap-4 p-5">
@@ -103,6 +105,42 @@ export function VaultsPage() {
               <p className="mt-1 text-[12px]">v{storage?.schemaVersion ?? "—"}</p>
             </div>
           </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-[13px] font-semibold">Local accounts</h2>
+            <Button variant="secondary" size="sm" onClick={() => void requestAddAccount()}>
+              <UserPlus className="h-3.5 w-3.5" />
+              Add account
+            </Button>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-border bg-surface">
+            {accounts.length === 0 ? (
+              <p className="px-4 py-4 text-[12px] text-muted-foreground">No accounts yet.</p>
+            ) : (
+              <ul className="divide-y divide-border/70">
+                {accounts.map((account) => (
+                  <li key={account.vault_id} className="flex items-center gap-3 px-4 py-2.5">
+                    <Vault className="h-4 w-4 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[12.5px] font-medium">{account.username}</p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {account.vault_name}
+                      </p>
+                    </div>
+                    {session?.vaultId === account.vault_id ? (
+                      <Badge tone="success">Open</Badge>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Each account is a separate vault with its own master password and key. Accounts share
+            this database file and nothing else.
+          </p>
         </section>
 
         <section className="mt-6">

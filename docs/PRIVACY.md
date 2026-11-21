@@ -42,9 +42,15 @@ Everything else happens offline.
 - Exports: only in the location you choose.
 - Favicon cache: local files, cleared with the application data.
 - Secret access history: inside the encrypted database.
+- Multiple local accounts share that one file; each account has its own vault id,
+  so items are stored in separate rows under separate keys.
 
 Uninstalling does not automatically delete the vault; remove the application
 data folder yourself if you want it gone.
+
+The optional browser extension does not create a second data store. Its native
+host opens the same `acuye.db`, reads it, and writes nothing; the extension itself
+keeps no vault data, only the in-memory result of the popup that is open.
 
 ## What the database reveals
 
@@ -68,8 +74,9 @@ items to a device you approved; the peer never receives your vault key.
 
 ## Children and accounts
 
-There are no accounts, no sign-up, no email address and no age-gated data
-collection, because there is no service to collect it.
+Local vaults can be split into several accounts, but there is no service account,
+no sign-up, no email address and no age-gated data collection, because there is
+no service to collect it.
 
 ## Changes
 

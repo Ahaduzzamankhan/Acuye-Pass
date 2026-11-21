@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   Star,
   StickyNote,
+  UserPlus,
+  Users,
   Vault,
 } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -48,6 +50,7 @@ export function Sidebar() {
     setFilter,
     lock,
     logout,
+    requestAddAccount,
     showToast,
   } = useApp();
 
@@ -262,6 +265,16 @@ export function Sidebar() {
                   label: "Settings",
                   icon: <Settings />,
                   onSelect: () => go("/settings/appearance"),
+                },
+                {
+                  label: "Add account",
+                  icon: <UserPlus />,
+                  onSelect: () => void requestAddAccount(),
+                },
+                {
+                  label: "Switch account",
+                  icon: <Users />,
+                  onSelect: () => void lock("Choose an account to unlock."),
                 },
                 {
                   label: "Lock vault",

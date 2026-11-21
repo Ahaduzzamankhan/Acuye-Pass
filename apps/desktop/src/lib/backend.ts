@@ -43,7 +43,9 @@ export interface Backend {
 
   appStatus(): Promise<AppStatus>;
   createAccount(username: string, password: string): Promise<SessionView>;
-  unlock(username: string, password: string): Promise<SessionView>;
+  addAccount(username: string, password: string, vaultName?: string | null): Promise<SessionView>;
+  listAccounts(): Promise<AccountSummary[]>;
+  unlock(vaultId: string | null, username: string, password: string): Promise<SessionView>;
   lock(): Promise<void>;
   logout(): Promise<void>;
   sessionTouch(): Promise<SessionView | null>;

@@ -17,6 +17,7 @@ members = [
   "crates/acuye-breach",
   "crates/acuye-lan",
   "crates/acuye-ffi",
+  "crates/acuye-browser-host",
   "apps/desktop/src-tauri",
 ]
 

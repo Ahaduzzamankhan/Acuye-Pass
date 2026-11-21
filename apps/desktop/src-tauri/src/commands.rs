@@ -139,11 +139,15 @@ pub fn create_account(
 #[tauri::command]
 pub fn unlock(
     state: State<'_, AppState>,
+    vault_id: Option<String>,
     username: String,
     password: String,
 ) -> ApiResult<SessionView> {
     let mut core = lock_core(&state)?;
-    let unlocked = core.auth.unlock(&username, &password)?;
+    let unlocked = match vault_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => core.auth.unlock_vault(id, &password)?,
+        None => core.auth.unlock(&username, &password)?,
+    };
     let idle = core.settings.auto_lock_secs;
     core.session = Some(LiveSession {
         session: Session::new(unlocked.username.clone(), unlocked.vault.id.clone(), idle),
@@ -151,6 +155,37 @@ pub fn unlock(
     });
     touch_device(core.auth.db(), &core.device_id)?;
     core.session_view().ok_or_else(ApiError::internal)
+}
+
+/// Create an additional vault in this database and switch to it. Creating an
+/// account always locks whatever vault was open, so two vaults are never
+/// decrypted at the same time.
+#[tauri::command]
+pub fn add_account(
+    state: State<'_, AppState>,
+    username: String,
+    password: String,
+    vault_name: Option<String>,
+) -> ApiResult<SessionView> {
+    let mut core = lock_core(&state)?;
+    core.session = None;
+    let unlocked = core
+        .auth
+        .add_account(&username, &password, vault_name.as_deref())?;
+    let idle = core.settings.auto_lock_secs;
+    core.session = Some(LiveSession {
+        session: Session::new(unlocked.username.clone(), unlocked.vault.id.clone(), idle),
+        unlocked,
+    });
+    touch_device(core.auth.db(), &core.device_id)?;
+    core.session_view().ok_or_else(ApiError::internal)
+}
+
+/// Non-secret list of local accounts, for the unlock screen's account picker.
+#[tauri::command]
+pub fn list_accounts(state: State<'_, AppState>) -> ApiResult<Vec<AccountSummary>> {
+    let core = lock_core(&state)?;
+    Ok(core.auth.accounts()?)
 }
 
 #[tauri::command]
@@ -186,11 +221,12 @@ pub fn change_master_password(
     new_password: String,
 ) -> ApiResult<SessionView> {
     let mut core = lock_core(&state)?;
-    // Require an unlocked session as well as the current password.
-    core.unlocked()?;
+    // Require an unlocked session as well as the current password, and rotate
+    // the vault that session belongs to.
+    let vault_id = core.unlocked()?.unlocked.vault.id.clone();
     let rotated = core
         .auth
-        .change_master_password(&current_password, &new_password)?;
+        .change_master_password(&vault_id, &current_password, &new_password)?;
     let idle = core.settings.auto_lock_secs;
     let username = rotated.username.clone();
     let vault_id = rotated.vault.id.clone();
@@ -204,8 +240,14 @@ pub fn change_master_password(
 #[tauri::command]
 pub fn rename_vault(state: State<'_, AppState>, name: String) -> ApiResult<String> {
     let mut core = lock_core(&state)?;
-    let key = core.unlocked()?.unlocked.vault_key.clone();
-    core.auth.rename_vault(&key, &name)?;
+    let (vault_id, key) = {
+        let live = core.unlocked()?;
+        (
+            live.unlocked.vault.id.clone(),
+            live.unlocked.vault_key.clone(),
+        )
+    };
+    core.auth.rename_vault(&vault_id, &key, &name)?;
     let trimmed = name.trim().to_string();
     core.unlocked()?.unlocked.vault.name = trimmed.clone();
     Ok(trimmed)

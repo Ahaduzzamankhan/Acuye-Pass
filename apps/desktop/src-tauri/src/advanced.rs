@@ -515,7 +515,7 @@ fn breach_view(id: String, title: String, password: &str) -> BreachItemView {
 
 /// Check one login item. The password never leaves the process; only five
 /// characters of its SHA-1 leave, and nothing is logged.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn breach_check_item(state: State<'_, AppState>, id: String) -> ApiResult<BreachItemView> {
     let (title, mut password) = {
         let mut core = lock_core(&state)?;
@@ -542,7 +542,7 @@ pub fn breach_check_item(state: State<'_, AppState>, id: String) -> ApiResult<Br
 
 /// Check every login in the vault. Runs outside the vault lock so the UI stays
 /// responsive while the range lookups happen.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn breach_scan_vault(state: State<'_, AppState>) -> ApiResult<BreachScanView> {
     let mut candidates: Vec<(String, String, String)> = Vec::new();
     {
@@ -716,7 +716,7 @@ pub fn lan_pairing_offer(state: State<'_, AppState>) -> ApiResult<LanOfferView> 
 }
 
 /// Wait for the other device to connect with the code just shown, and approve it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_await_pairing(state: State<'_, AppState>, timeout_secs: u64) -> ApiResult<LanPairView> {
     let (identity, offer) = {
         let mut core = lock_core(&state)?;
@@ -773,7 +773,7 @@ pub fn lan_await_pairing(state: State<'_, AppState>, timeout_secs: u64) -> ApiRe
 }
 
 /// Pair with the device whose QR code was scanned.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_pair(state: State<'_, AppState>, uri: String) -> ApiResult<LanPairView> {
     let at = now();
     let remote = parse_pairing_uri(&uri, at)?;
@@ -852,7 +852,7 @@ pub fn lan_forget_peer(state: State<'_, AppState>, id: String) -> ApiResult<()> 
 
 /// Open an authenticated session to a paired device. The peer must still be
 /// approved, and both sides must derive the same six-digit code.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_test_peer(state: State<'_, AppState>, id: String) -> ApiResult<LanPairView> {
     let (identity, peer_row_data, store) = {
         let mut core = lock_core(&state)?;
@@ -1026,7 +1026,7 @@ fn merge_bundle(
 /// Exchange vaults with a paired device. The peer must be approved, signed into
 /// the same account, and able to prove it holds the same vault key — otherwise
 /// nothing is exchanged.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_sync_peer(state: State<'_, AppState>, id: String) -> ApiResult<LanSyncView> {
     let peer = {
         let core = lock_core(&state)?;
@@ -1106,7 +1106,7 @@ pub fn lan_sync_peer(state: State<'_, AppState>, id: String) -> ApiResult<LanSyn
 }
 
 /// Accept one incoming sync from an approved device.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_accept_sync(state: State<'_, AppState>, timeout_secs: u64) -> ApiResult<LanSyncView> {
     let identity = {
         let mut core = lock_core(&state)?;
@@ -1197,7 +1197,7 @@ fn trust_store(rows: &[LanPeerRow]) -> TrustStore {
 
 /// Answer an authenticated LAN ping. Used by the receiving device while
 /// testing a connection; runs one handshake and returns.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn lan_answer_ping(state: State<'_, AppState>, timeout_secs: u64) -> ApiResult<()> {
     let identity = {
         let mut core = lock_core(&state)?;

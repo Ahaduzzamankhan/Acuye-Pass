@@ -20,6 +20,7 @@
 │ acuye-storage (SQLite)   acuye-generator   acuye-totp   acuye-breach     │
 │ acuye-lan   acuye-sync   acuye-protocol   acuye-import   acuye-export    │
 │ acuye-updater   acuye-platform   acuye-ffi                               │
+│ acuye-browser-host (separate stdio process, same crates, same database)   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,6 +51,7 @@ Two implementations exist:
 | `acuye-updater` | Channel selection, asset allowlists, minisign verification, downloads |
 | `acuye-platform` | Data paths, URL validation/SSRF guards, favicon fetching |
 | `acuye-ffi` | JSON helpers for future non-Tauri shells (no mobile UI yet) |
+| `acuye-browser-host` | Chrome native-messaging host: reads the database, unlocks one vault in memory, answers popup `list`/`fill` requests |
 
 Dependency direction is one-way: `core` knows nothing about crypto or storage;
 `crypto` knows nothing about items; `vault` uses `core` + `crypto`; `storage`
@@ -58,9 +60,10 @@ that ordering so `acuye-ffi` can reuse the core unchanged.
 
 ## Data model
 
-SQLite tables (schema version 3, `PRAGMA user_version`):
+SQLite tables (schema version 4, `PRAGMA user_version`):
 
-- `accounts` — username, KDF parameters, salt, verifier, wrapped vault key
+- `accounts` — one row per vault, keyed by vault id: username, KDF parameters,
+  salt, verifier, wrapped vault key, vault name
 - `items` — id, vault id, nonce, ciphertext, updated_at (**no plaintext**)
 - `settings` — JSON app settings
 - `devices` — device records for sync

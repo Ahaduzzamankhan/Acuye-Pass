@@ -6,8 +6,8 @@ features compare with other products, see [../benchmark.md](../benchmark.md).
 
 ## Vault model
 
-- **One vault per device.** Its name is metadata and can be renamed; renaming
-  does not touch item encryption.
+- **One vault per account, several accounts per device.** A vault's name is
+  metadata and can be renamed; renaming does not touch item encryption.
 - **Local-first.** The vault is a SQLite file. It exists decrypted only in the
   Rust process, only while unlocked.
 - **Eight item types**, each with its own fields:
@@ -27,6 +27,42 @@ features compare with other products, see [../benchmark.md](../benchmark.md).
   updated timestamps.
 - **Limits:** title 256 chars, notes 100,000 chars, secret values 32,768 bytes,
   100 custom fields per item.
+
+## Accounts
+
+- Every account is an independent vault: its own username, master password, salt,
+  verifier and vault key. Items are stored per vault id, so two accounts never
+  see each other's data.
+- All accounts live in the same encrypted database file. Settings, devices and
+  LAN peer approvals are shared by the device, not by the account.
+- **Add account** from the unlock screen, the sidebar account menu, or Vaults.
+  Creating one locks whatever vault was open — two vaults are never decrypted at
+  the same time.
+- The unlock screen lists every local account (username + vault name) so you pick
+  the one to open; it falls back to a username field if a name is ambiguous.
+- Account names are unique (case-insensitively). Removing an account is not
+  implemented yet: lock out of it, or delete the database after backing up.
+
+## Browser extension
+
+An optional Manifest V3 extension for Chrome/Chromium, in
+[`apps/browser-extension`](../apps/browser-extension), backed by the
+`acuye-browser-host` native messaging host.
+
+- Lists the local accounts, unlocks one with its master password, searches
+  titles/usernames/hosts (at most 50 logins) and fills the active tab's first
+  visible login form.
+- A content script auto-fills on page load when the page host matches exactly
+  one saved login and the host already has an unlocked session. It never prompts
+  for the master password and never submits a form.
+- A 2FA button copies the current RFC 6238 code for a login; the secret is used
+  in the Rust host and never sent to the page.
+- Autofill can be turned off from `chrome.storage.local` (`autofill: false`).
+- The host reads the database; it never writes items and never creates accounts.
+- Idle sessions lock after 10 minutes and the host exits when the browser closes
+  its port.
+- Full install steps, permissions and threat notes:
+  [BROWSER_EXTENSION.md](BROWSER_EXTENSION.md).
 
 ## Workspace
 
@@ -166,7 +202,9 @@ discovery service and no server.
 
 ## Not implemented
 
-- Browser extension, autofill, passkey creation/use.
+- Save prompts, keyboard shortcut/context-menu fill, card/note filling from the
+  extension, and passkey creation/use.
+- Firefox and Safari builds of the extension; a store listing or signed package.
 - Cloud sync provider (the `acuye-sync/1` protocol ships as a spec plus a
   transport trait only).
 - Multiple users, sharing, collections, emergency access, secure send links.

@@ -89,7 +89,7 @@ pub fn update_status(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> 
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_for_updates(
     state: State<'_, AppState>,
     force: Option<bool>,
@@ -163,7 +163,7 @@ pub fn check_for_updates(
     Ok(view(&channel, Some(now), &runtime))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn download_update(app: AppHandle, state: State<'_, AppState>) -> ApiResult<UpdateStatusView> {
     let (channel, last_check, candidate, signing) = {
         let core = lock_core(&state)?;
@@ -243,7 +243,7 @@ pub fn download_update(app: AppHandle, state: State<'_, AppState>) -> ApiResult<
     Ok(view(&channel, last_check, &runtime))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn verify_update(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> {
     let (channel, last_check, candidate, path): (
         String,
@@ -297,7 +297,7 @@ pub fn verify_update(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> 
     Ok(view(&channel, last_check, &runtime))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn install_update(state: State<'_, AppState>) -> ApiResult<UpdateStatusView> {
     let (channel, last_check, updates_dir, path, candidate, verified) = {
         let core = lock_core(&state)?;

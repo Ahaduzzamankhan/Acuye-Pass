@@ -78,13 +78,14 @@ everything around it:
 | Network on unlock | **None** | HTTPS round trip to the vendor's cloud (or your server) |
 | Vault storage | Local SQLite, WAL mode, in-process | Server-side encrypted blobs, cached locally |
 | Search | In-memory over decrypted items in the same process | In the app/extension, after cache hydration |
-| Browser integration | None (so: no content-script injection, no messaging hop) | Extension injects scripts and messages the native app per fill |
+| Browser integration | Optional Chrome extension; content script fills a form when exactly one login matches | Extension injects scripts and messages the native app per fill |
 | Viewing an item | Rust function call | Depending on product: cached, or a round trip for attachments/sharing |
 
 Those extra hops are what you feel as "waiting for the password manager".
 They are also exactly what buys multi-device sync, sharing, passkeys and
-autofill — features this app does not have yet. The trade is deliberate: Acuye
-Pass is fast because it does one thing locally.
+automatic autofill — features this app only partly has (an optional
+popup-triggered extension fills a page when you ask it to). The trade is
+deliberate: Acuye Pass is fast because it does one thing locally.
 
 > **Honesty note.** The Acuye Pass rows are measured. The Bitwarden and 1Password
 > *KDF* rows are equivalent local work measured on the same machine (same
@@ -200,6 +201,9 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 - **Username + master password only.** No biometrics, no Windows Hello, no PIN,
   no recovery key.
+- **Multiple accounts.** Each account is a separate vault with its own username,
+  master password and key, all inside the same encrypted database. Pick one on
+  the unlock screen or add another from there, the account menu or Vaults.
 - **Eight item types** — logins, secure notes, cards, identities, documents,
   custom items, authenticator entries and secret-manager entries.
 - **Built-in authenticator.** RFC 6238 TOTP and RFC 4226 HOTP generated in Rust;
@@ -212,6 +216,11 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
   signed mutual authentication and a revocable peer list. No server involved.
 - **Import** from Acuye JSON, Bitwarden JSON/CSV, Chrome/Edge CSV, 1Password CSV
   and generic CSV. **Export** encrypted, or plaintext CSV/JSON on request.
+- **Chrome/Chromium extension.** Unlocks a vault through a native messaging
+  host, fills the page's login form automatically when exactly one saved login
+  matches the host, fills on demand from the popup, and copies current 2FA
+  codes. No save prompts, no passkeys; unpacked, not in a store — see
+  [docs/BROWSER_EXTENSION.md](docs/BROWSER_EXTENSION.md).
 - **Encrypted backups and atomic restore.** The app never silently resets a vault.
 - **Three-panel workspace** with a collapsible animated sidebar, six accent
   themes in light/dark/system mode, reduced-motion support, command palette and
@@ -228,7 +237,7 @@ this app loses — is in [benchmark.md](benchmark.md). The short version:
 | Price | Free (MIT) | Free tier; Premium $19.80/yr | No free tier; $3.99/mo yearly |
 | Open source | Yes, MIT, whole codebase | Yes | No |
 | Account / cloud | None | Yes (or self-host) | Yes |
-| Browser autofill | **No** | Yes | Yes |
+| Browser autofill | **Extension** (auto-fills one matching login) | Yes | Yes |
 | Passkeys | **No** | Yes | Yes |
 | Cloud sync / mobile | **No** | Yes | Yes |
 | Sharing / emergency access | **No** | Yes | Yes |
@@ -254,6 +263,7 @@ pnpm lint                   # eslint, zero warnings tolerated
 pnpm typecheck              # tsc --noEmit
 pnpm test                   # vitest + Testing Library
 cargo test --workspace      # Rust tests
+cargo build --release -p acuye-browser-host          # extension native host
 cargo run --release --example bench -p acuye-vault   # speed numbers above
 ```
 
@@ -266,10 +276,11 @@ is never shipped.
 ```
 apps/desktop            React + TypeScript + Vite + Tauri 2 frontend
 apps/desktop/src-tauri  Tauri commands, window control, updater wiring
+apps/browser-extension  Manifest V3 popup + native messaging bridge
 apps/mobile             Empty React Native scaffold (future work)
 crates/acuye-*          Rust workspace: core, crypto, vault, storage, auth,
                         generator, totp, breach, lan, sync, protocol, import,
-                        export, updater, platform, ffi
+                        export, updater, platform, ffi, browser-host
 benchmark.md            Product comparison against Bitwarden and 1Password
 docs/                   Architecture, security, privacy, development, features,
                         sync, release, updater
@@ -279,6 +290,7 @@ docs/                   Architecture, security, privacy, development, features,
 
 - [Benchmark vs. Bitwarden and 1Password](benchmark.md)
 - [Features](docs/FEATURES.md)
+- [Browser extension](docs/BROWSER_EXTENSION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security model](docs/SECURITY.md)
 - [Privacy](docs/PRIVACY.md)
@@ -293,7 +305,9 @@ docs/                   Architecture, security, privacy, development, features,
 - Pre-1.0, unaudited, single maintainer.
 - Windows is the only shipped target. The Tauri shell builds elsewhere, but the
   release pipeline and updater are Windows-only.
-- No browser extension, autofill or passkey support, so logins are copied by hand.
+- The browser extension is Chrome/Chromium only and loaded unpacked (not in a
+  store). It fills one matching login form and never saves, prompts or creates
+  passkeys; automatic filling needs the vault to be unlocked first.
 - No cloud sync, sharing, emergency access or mobile app.
 - `acuye-sync/1` is a specification plus a transport trait; no provider ships.
 - Clipboard contents remain readable by other applications until the clear timer

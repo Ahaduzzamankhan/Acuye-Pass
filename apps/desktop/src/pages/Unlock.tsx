@@ -1,29 +1,42 @@
 import { motion } from "motion/react";
-import { Eye, EyeOff, HelpCircle, ShieldCheck, Unlock as UnlockIcon } from "lucide-react";
-import { useState } from "react";
+import { Check, Eye, EyeOff, HelpCircle, Plus, ShieldCheck, Unlock as UnlockIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { useApp } from "@/lib/app-context";
 import { useBackend } from "@/lib/backend-context";
+import { cn, initials } from "@/lib/utils";
 import { Dialog } from "@/components/dialog";
 import { Button, Field, Input } from "@/components/ui";
 
 export function Unlock() {
-  const { status, unlock, showToast } = useApp();
+  const { status, accounts, authMode, setAuthMode, unlock, addAccount, showToast } = useApp();
   const backend = useBackend();
+  const adding = authMode === "add";
+  const [selectedVault, setSelectedVault] = useState<string | null>(accounts[0]?.vault_id ?? null);
   const [username, setUsername] = useState(status?.username ?? "");
+  const [vaultName, setVaultName] = useState("");
   const [password, setPassword] = useState("");
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
+  useEffect(() => {
+    if (!selectedVault && accounts.length > 0) setSelectedVault(accounts[0].vault_id);
+  }, [accounts, selectedVault]);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      await unlock(username, password);
-      showToast({ title: "Vault unlocked", tone: "success" });
+      if (adding) {
+        await addAccount(username, password, vaultName);
+        showToast({ title: "Account added", description: "The new vault is open.", tone: "success" });
+      } else {
+        await unlock(accounts.length > 0 ? selectedVault : null, username, password);
+        showToast({ title: "Vault unlocked", tone: "success" });
+      }
       setPassword("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Authentication failed");
@@ -59,22 +72,77 @@ export function Unlock() {
                 <UnlockIcon className="h-3 w-3 text-muted-foreground" />
               </span>
             </div>
-            <h1 className="mt-5 text-[21px] font-semibold tracking-[-0.02em]">Unlock your vault</h1>
+            <h1 className="mt-5 text-[21px] font-semibold tracking-[-0.02em]">
+              {adding ? "Add an account" : "Unlock your vault"}
+            </h1>
             <p className="mt-1 text-[12.5px] text-muted-foreground">
-              Your master password decrypts everything locally.
+              {adding
+                ? "A new vault with its own master password, in the same encrypted database."
+                : "Your master password decrypts everything locally."}
             </p>
           </div>
 
           <form onSubmit={submit} className="mt-6 space-y-3.5">
-            <Field label="Account" htmlFor="unlock-username">
-              <Input
-                id="unlock-username"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-                required
-              />
-            </Field>
+            {!adding && accounts.length > 0 ? (
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                  Account
+                </p>
+                {accounts.map((account) => {
+                  const selected = account.vault_id === selectedVault;
+                  return (
+                    <button
+                      key={account.vault_id}
+                      type="button"
+                      onClick={() => setSelectedVault(account.vault_id)}
+                      aria-pressed={selected}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors",
+                        selected ? "border-accent/60 bg-accent/10" : "border-border hover:bg-muted/40",
+                      )}
+                    >
+                      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/15 text-[11px] font-semibold text-accent">
+                        {initials(account.username)}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12.5px] font-medium">
+                          {account.username}
+                        </span>
+                        <span className="block truncate text-[10.5px] text-muted-foreground">
+                          {account.vault_name}
+                        </span>
+                      </span>
+                      {selected ? <Check className="h-3.5 w-3.5 shrink-0 text-accent" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {adding || accounts.length === 0 ? (
+              <Field label={adding ? "Account name" : "Account"} htmlFor="unlock-username">
+                <Input
+                  id="unlock-username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  autoComplete="username"
+                  required
+                />
+              </Field>
+            ) : null}
+
+            {adding ? (
+              <Field label="Vault name (optional)" htmlFor="unlock-vault-name">
+                <Input
+                  id="unlock-vault-name"
+                  value={vaultName}
+                  onChange={(event) => setVaultName(event.target.value)}
+                  placeholder="Personal"
+                  maxLength={64}
+                />
+              </Field>
+            ) : null}
+
             <Field label="Master password" htmlFor="unlock-password">
               <div className="relative">
                 <Input
@@ -82,7 +150,7 @@ export function Unlock() {
                   type={reveal ? "text" : "password"}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
+                  autoComplete={adding ? "new-password" : "current-password"}
                   className="pr-10"
                   autoFocus
                   required
@@ -110,15 +178,44 @@ export function Unlock() {
             ) : null}
 
             <Button type="submit" size="lg" className="w-full" loading={loading}>
-              <UnlockIcon className="h-4 w-4" />
-              Unlock
+              {adding ? <Plus className="h-4 w-4" /> : <UnlockIcon className="h-4 w-4" />}
+              {adding ? "Create account" : "Unlock"}
             </Button>
           </form>
+
+          {adding ? (
+            accounts.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setPassword("");
+                  setAuthMode("unlock");
+                }}
+                className="mx-auto mt-4 block text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Back to unlock
+              </button>
+            ) : null
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setPassword("");
+                setAuthMode("add");
+              }}
+              className="mx-auto mt-4 flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Plus className="h-3 w-3" />
+              Add another account
+            </button>
+          )}
 
           <button
             type="button"
             onClick={() => setHelpOpen(true)}
-            className="mx-auto mt-4 flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
+            className="mx-auto mt-3 flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
           >
             <HelpCircle className="h-3 w-3" />
             Forgot your master password?
@@ -143,6 +240,10 @@ export function Unlock() {
             Acuye Pass stores no plaintext password, no recovery key and no server-side copy of
             your vault. If the master password is lost, the encrypted data cannot be decrypted —
             by us or by anyone else.
+          </p>
+          <p>
+            Other accounts in the same database keep working: each vault has its own master
+            password, so losing one does not lock you out of the others.
           </p>
           <p>
             If you have an encrypted backup and remember an older master password, restore the

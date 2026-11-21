@@ -51,12 +51,21 @@ import type {
 
 const STORAGE_KEY = "acuye-preview-state-v1";
 
+interface PreviewAccount {
+  vaultId: string;
+  username: string;
+  secret: string;
+  vaultName: string;
+}
+
 interface PreviewState {
   username: string | null;
   secret: string | null;
   items: TypedItem[];
   settings: AppSettings;
   unlocked: boolean;
+  accounts: PreviewAccount[];
+  activeVaultId: string | null;
 }
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -113,6 +122,20 @@ function loadState(): PreviewState {
     if (raw) {
       const parsed = JSON.parse(raw) as PreviewState;
       parsed.unlocked = false;
+      if (!Array.isArray(parsed.accounts)) {
+        parsed.accounts =
+          parsed.username && parsed.secret
+            ? [
+                {
+                  vaultId: "preview-vault",
+                  username: parsed.username,
+                  secret: parsed.secret,
+                  vaultName: "Personal",
+                },
+              ]
+            : [];
+      }
+      parsed.activeVaultId = parsed.accounts[0]?.vaultId ?? null;
       return parsed;
     }
   } catch {
@@ -124,6 +147,8 @@ function loadState(): PreviewState {
     items: [],
     settings: DEFAULT_SETTINGS,
     unlocked: false,
+    accounts: [],
+    activeVaultId: null,
   };
   return seeded;
 }
@@ -259,11 +284,20 @@ export class DemoBackend implements Backend {
     if (!this.state.unlocked) throw new BackendError("locked", "The vault is locked");
   }
 
+  private activeAccount(): PreviewAccount | null {
+    return (
+      this.state.accounts.find((account) => account.vaultId === this.state.activeVaultId) ??
+      this.state.accounts[0] ??
+      null
+    );
+  }
+
   private session(): SessionView {
+    const account = this.activeAccount();
     return {
-      username: this.state.username ?? "preview",
-      vaultId: "preview-vault",
-      vaultName: "Personal",
+      username: account?.username ?? "preview",
+      vaultId: account?.vaultId ?? "preview-vault",
+      vaultName: account?.vaultName ?? "Personal",
       itemCount: this.state.items.length,
       idleTimeoutSecs: this.state.settings.auto_lock_secs,
     };
@@ -277,8 +311,8 @@ export class DemoBackend implements Backend {
 
   async appStatus(): Promise<AppStatus> {
     return {
-      hasAccount: Boolean(this.state.username),
-      username: this.state.username,
+      hasAccount: this.state.accounts.length > 0,
+      username: this.activeAccount()?.username ?? null,
       locked: !this.state.unlocked,
       appVersion: "0.1.0-preview",
       platform: "browser",
@@ -292,7 +326,7 @@ export class DemoBackend implements Backend {
   }
 
   async createAccount(username: string, password: string): Promise<SessionView> {
-    if (this.state.username) {
+    if (this.state.accounts.length > 0) {
       throw new BackendError("conflict", "An account already exists in this preview");
     }
     if (username.trim().length < 3) {
@@ -301,21 +335,53 @@ export class DemoBackend implements Backend {
     if (password.length < 12) {
       throw new BackendError("validation", "The master password must be at least 12 characters");
     }
-    this.state.username = username.trim();
-    this.state.secret = password;
+    const account: PreviewAccount = {
+      vaultId: "preview-vault",
+      username: username.trim(),
+      secret: password,
+      vaultName: "Personal",
+    };
+    this.state.accounts = [account];
+    this.state.activeVaultId = account.vaultId;
+    this.state.username = account.username;
+    this.state.secret = account.secret;
     this.state.unlocked = true;
     this.state.items = seedItems(true);
     this.persist();
     return this.session();
   }
 
-  async unlock(username: string, password: string): Promise<SessionView> {
-    if (!this.state.username || username.trim().toLowerCase() !== this.state.username.toLowerCase()) {
+  async addAccount(): Promise<SessionView> {
+    throw new BackendError(
+      "unsupported",
+      "The browser preview keeps a single demo account. Add accounts in the desktop app.",
+    );
+  }
+
+  async listAccounts(): Promise<AccountSummary[]> {
+    return this.state.accounts.map((account) => ({
+      username: account.username,
+      vault_id: account.vaultId,
+      vault_name: account.vaultName,
+      kdf_algorithm: "argon2id",
+      kdf_memory_kib: 65536,
+      kdf_iterations: 3,
+      created_at: now(),
+    }));
+  }
+
+  async unlock(vaultId: string | null, username: string, password: string): Promise<SessionView> {
+    const account = vaultId
+      ? this.state.accounts.find((candidate) => candidate.vaultId === vaultId)
+      : this.state.accounts.find(
+          (candidate) => candidate.username.toLowerCase() === username.trim().toLowerCase(),
+        );
+    if (!account || password !== account.secret) {
       throw new BackendError("authentication_failed", "Authentication failed");
     }
-    if (password !== this.state.secret) {
-      throw new BackendError("authentication_failed", "Authentication failed");
-    }
+    this.state.activeVaultId = account.vaultId;
+    this.state.username = account.username;
+    this.state.secret = account.secret;
     this.state.unlocked = true;
     if (this.state.items.length === 0) this.state.items = seedItems(true);
     this.persist();
