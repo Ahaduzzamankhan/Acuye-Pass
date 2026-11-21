@@ -6,8 +6,12 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      tag:
+        description: "Existing release tag to upload the APK to (defaults to the latest release)"
+        required: false
+        type: string
       version:
-        description: "Version name for the APK (defaults to apps/mobile/package.json)"
+        description: "Version name baked into the APK (defaults to the target release tag)"
         required: false
         type: string
 
@@ -71,13 +75,45 @@ jobs:
             -o apps/mobile/android/app/src/main/jniLibs \
             build -p acuye-ffi --release
 
+      # This workflow only ever attaches the APK to a release that already
+      # exists; it never creates a tag or a release of its own. A manual run
+      # targets the latest published release unless `tag` says otherwise.
+      - name: Resolve the target release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            if [ -z "$TAG" ]; then
+              TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')"
+            fi
+          fi
+          TAG="$(printf '%s' "$TAG" | tr -d '[:space:]')"
+          if [ -z "$TAG" ]; then
+            echo "no existing release to upload to; publish a release first" >&2
+            exit 1
+          fi
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "release $TAG does not exist; this workflow only uploads to an existing release" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Uploading the APK to the existing release $TAG"
+
       - name: Resolve the release version
         id: version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
+          elif [ -n "${{ steps.release.outputs.tag }}" ]; then
+            VERSION="${{ steps.release.outputs.tag }}"
+            VERSION="${VERSION#v}"
           else
             VERSION="$(node -p "require('./apps/mobile/package.json').version")"
           fi
@@ -148,15 +184,11 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
-      - name: Publish the GitHub release
-        if: github.ref_type == 'tag'
+      - name: Upload the APK to the existing release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" dist/*.apk \
-              --title "Acuye Pass ${{ steps.version.outputs.name }}" \
-              --generate-notes
-          fi
+          gh release upload "$RELEASE_TAG" dist/*.apk --clobber
+          gh release view "$RELEASE_TAG" --json tagName,assets \
+            --jq '"\(.tagName): " + ([.assets[] | .name] | join(", "))'
