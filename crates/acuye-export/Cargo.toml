@@ -8,8 +8,10 @@ license.workspace = true
 [dependencies]
 acuye-core = { workspace = true }
 acuye-crypto = { workspace = true }
-acuye-vault = { workspace = true }
 acuye-generator = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+acuye-vault = { workspace = true }

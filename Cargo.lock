@@ -48,7 +48,6 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -115,7 +114,6 @@ name = "acuye-import"
 version = "0.1.6"
 dependencies = [
  "acuye-core",
- "acuye-vault",
  "serde",
  "serde_json",
  "uuid",
