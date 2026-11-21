@@ -37,7 +37,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      # v4 is the first release that does not install the deprecated `tools`
+      # package, which Google stopped serving; it only provides the cmdline-tools
+      # and licenses, so the step below installs exactly what the build needs.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ""
 
       - name: Install Android SDK packages
         run: |
