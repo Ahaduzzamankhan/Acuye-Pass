@@ -1588,6 +1588,7 @@ function UpdatesSection() {
   const [channelDialog, setChannelDialog] = useState<ReleaseChannel | null>(null);
   const [installDialog, setInstallDialog] = useState(false);
   const autoChecked = useRef(false);
+  const failureReported = useRef(false);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -1655,6 +1656,45 @@ function UpdatesSection() {
 
   const stage = status?.stage ?? "idle";
   const channel = settings.update_channel;
+
+  // The download runs in a Rust thread, so its result has to be polled. Without
+  // this the section kept showing the last progress event it received (often
+  // "0 B") even after the download finished or failed.
+  useEffect(() => {
+    if (stage !== "downloading") return;
+    failureReported.current = false;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await backend.updateStatus();
+        if (cancelled) return;
+        setStatus((current) =>
+          current && next.stage === "downloading"
+            ? {
+                ...next,
+                progress: Math.max(current.progress ?? 0, next.progress ?? 0),
+                total: next.total ?? current.total,
+              }
+            : next,
+        );
+        if (next.stage === "failed" && !failureReported.current) {
+          failureReported.current = true;
+          showToast({
+            title: "Update download failed",
+            description: next.error ?? undefined,
+            tone: "error",
+          });
+        }
+      } catch {
+        // Transient status failures are retried on the next tick.
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 800);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [backend, stage, showToast]);
   const percent =
     status?.progress != null && status?.total ? Math.min(100, (status.progress / status.total) * 100) : null;
 
@@ -1765,11 +1805,13 @@ function UpdatesSection() {
         {stage === "failed" && status?.error ? (
           <p className="mx-4 mb-3 rounded-md bg-danger/10 px-3 py-2 text-[12px] text-danger">{status.error}</p>
         ) : null}
-        {percent != null ? (
+        {stage === "downloading" || percent != null ? (
           <div className="px-4 pb-3">
-            <Progress value={percent} />
+            <Progress value={percent ?? 0} />
             <p className="mt-1 text-[10.5px] tabular-nums text-muted-foreground">
-              {formatBytes(status?.progress ?? 0)} of {formatBytes(status?.total ?? 0)} · {Math.round(percent)}%
+              {status?.total
+                ? `${formatBytes(status.progress ?? 0)} of ${formatBytes(status.total)} · ${Math.round(percent ?? 0)}%`
+                : `${formatBytes(status?.progress ?? 0)} downloaded`}
             </p>
           </div>
         ) : null}

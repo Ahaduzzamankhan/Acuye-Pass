@@ -30,6 +30,18 @@ pub const ASSET_NAME_PREFIXES: [&str; 3] = ["Acuye Pass", "Acuye-Pass", "acuye-p
 pub const MAX_RELEASE_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_UPDATE_BYTES: u64 = 256 * 1024 * 1024;
 const HTTP_TIMEOUT_SECS: u64 = 30;
+const USER_AGENT: &str = "AcuyePass-Updater/0.1";
+
+/// GitHub answers a release-asset URL with a 302 to a signed CDN URL. Those
+/// hops are followed, but the response may only come from one of these hosts,
+/// so a redirect can never point the downloader at an arbitrary server.
+const ASSET_REDIRECT_HOSTS: [&str; 4] = [
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+];
+const MAX_ASSET_REDIRECTS: u32 = 5;
 
 /// Update signing public key, injected at build time:
 /// `ACUYE_UPDATER_PUBKEY=<base64 minisign public key>`.
@@ -221,6 +233,48 @@ pub fn validate_download_url(url: &str, tag: &str) -> Result<()> {
     Ok(())
 }
 
+/// Turn a transport failure into something the user can act on. GitHub answers
+/// 403/429 for rate limits, which is not the same problem as being offline.
+fn request_error(error: ureq::Error) -> AcuyeError {
+    match error {
+        ureq::Error::Status(403 | 429, _) => AcuyeError::Network(
+            "GitHub is rate limiting update checks right now; try again later".into(),
+        ),
+        ureq::Error::Status(status, _) => {
+            AcuyeError::Network(format!("the update server returned status {status}"))
+        }
+        _ => AcuyeError::Network("Could not reach the release server".into()),
+    }
+}
+
+fn host_of(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit('@').next()?;
+    let host = host_port.split(':').next()?;
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Update bytes may only ever be served by GitHub or its release CDN.
+fn trusted_asset_url(url: &str) -> bool {
+    host_of(url)
+        .map(|host| ASSET_REDIRECT_HOSTS.contains(&host.as_str()))
+        .unwrap_or(false)
+}
+
+/// Build the agent used for update bytes: follow GitHub's CDN redirects, but
+/// keep the TLS-only trust anchor in `validate_download_url`.
+fn asset_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .redirects(MAX_ASSET_REDIRECTS)
+        .build()
+}
+
 fn pick_asset(release: &GithubRelease) -> Option<UpdateAsset> {
     let names: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
     let candidate = release
@@ -326,10 +380,10 @@ impl ReleaseSource for GithubReleaseSource {
             .build();
         let response = agent
             .get(&releases_url())
-            .set("User-Agent", "AcuyePass-Updater/0.1")
+            .set("User-Agent", USER_AGENT)
             .set("Accept", "application/vnd.github+json")
             .call()
-            .map_err(|_| AcuyeError::Network("Could not reach the release server".into()))?;
+            .map_err(request_error)?;
         if response.status() != 200 {
             return Err(AcuyeError::Network(format!(
                 "release server returned status {}",
@@ -381,21 +435,25 @@ pub fn download_installer(
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .redirects(0)
-        .build();
+    let agent = asset_agent();
     let response = agent
         .get(&candidate.asset.url)
-        .set("User-Agent", "AcuyePass-Updater/0.1")
+        .set("User-Agent", USER_AGENT)
         .set("Accept", "application/octet-stream")
         .call()
-        .map_err(|_| AcuyeError::Network("Could not download the update".into()))?;
+        .map_err(request_error)?;
     if response.status() != 200 {
         return Err(AcuyeError::Network(format!(
             "update download failed with status {}",
             response.status()
         )));
+    }
+    // GitHub redirects the release URL to its CDN; refuse to read bytes that
+    // ended up anywhere other than GitHub or that CDN.
+    if !trusted_asset_url(response.get_url()) {
+        return Err(AcuyeError::Update(
+            "update download was redirected to an untrusted host".into(),
+        ));
     }
     let total = response
         .header("content-length")
@@ -433,18 +491,20 @@ pub fn download_installer(
 /// Download just the `.sig` file (max 4 KiB).
 pub fn fetch_signature(candidate: &UpdateCandidate) -> Result<String> {
     validate_download_url(&candidate.asset.signature_url, &candidate.tag_name)?;
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-        .redirects(0)
-        .build();
+    let agent = asset_agent();
     let response = agent
         .get(&candidate.asset.signature_url)
-        .set("User-Agent", "AcuyePass-Updater/0.1")
+        .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|_| AcuyeError::Network("Could not fetch the update signature".into()))?;
+        .map_err(request_error)?;
     if response.status() != 200 {
         return Err(AcuyeError::Network(
             "Could not fetch the update signature".into(),
+        ));
+    }
+    if !trusted_asset_url(response.get_url()) {
+        return Err(AcuyeError::Update(
+            "the update signature was redirected to an untrusted host".into(),
         ));
     }
     let mut body = String::new();
@@ -836,6 +896,32 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
         assert!(verify_installer(&path, "sig", "key", &candidate).is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn redirect_hosts_are_restricted_to_github() {
+        assert!(trusted_asset_url(
+            "https://github.com/Ahaduzzamankhan/Acuye-Pass/releases/download/v1.0.0/a.exe"
+        ));
+        assert!(trusted_asset_url(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sp=r&sig=x"
+        ));
+        assert!(trusted_asset_url(
+            "https://objects.githubusercontent.com/a.exe"
+        ));
+        // Ports and mixed case are still the same host.
+        assert!(trusted_asset_url("https://GitHub.com:443/a.exe"));
+        assert!(!trusted_asset_url(
+            "http://release-assets.githubusercontent.com/a.exe"
+        ));
+        assert!(!trusted_asset_url("https://evil.example.com/a.exe"));
+        assert!(!trusted_asset_url(
+            "https://github.com.evil.example/Ahaduzzamankhan/Acuye-Pass/a.exe"
+        ));
+        assert!(!trusted_asset_url(
+            "https://user@evil.example/github.com/a.exe"
+        ));
+        assert!(!trusted_asset_url("not a url"));
     }
 
     #[test]

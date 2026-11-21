@@ -13,12 +13,13 @@ import {
   MoreHorizontal,
   ShieldCheck,
   CalendarClock,
+  RefreshCw,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { useApp } from "@/lib/app-context";
 import { useBackend } from "@/lib/backend-context";
-import { itemTypeLabel, type ItemType, type TypedItem } from "@/lib/types";
+import { itemTypeLabel, type ItemType, type TotpEntry, type TypedItem } from "@/lib/types";
 import { cn, formatBytes, formatDate, hostOf, truncateMiddle } from "@/lib/utils";
 import { ConfirmDialog } from "./dialog";
 import { ItemAvatar } from "./item-avatar";
@@ -60,6 +61,24 @@ interface DocumentFields {
 }
 interface CustomFields {
   fields: Array<{ label: string; value: string; concealed: boolean }>;
+}
+interface TotpFields {
+  secret: string;
+  issuer: string;
+  account: string;
+  algorithm: string;
+  digits: number;
+  period: number;
+  otp_type: string;
+  counter: number;
+}
+interface SecretFields {
+  environment: string;
+  category: string;
+  fields: Array<{ label: string; value: string; concealed: boolean }>;
+  expires_at: number | null;
+  rotate_every_days: number | null;
+  last_rotated_at: number | null;
 }
 
 export function ItemDetail({ onEdit }: { onEdit: (item: TypedItem) => void }) {
@@ -358,6 +377,10 @@ export function ItemDetail({ onEdit }: { onEdit: (item: TypedItem) => void }) {
           </section>
         ) : null}
 
+        {item.kind === "totp" ? <TotpSection item={item} /> : null}
+
+        {item.kind === "secret" ? <SecretSection item={item} /> : null}
+
         {item.notes ? (
           <section className="mt-5">
             <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
@@ -434,6 +457,200 @@ export function ItemDetail({ onEdit }: { onEdit: (item: TypedItem) => void }) {
       )
       .catch(() => showToast({ title: "Could not copy that field", tone: "error" }));
   }
+}
+
+function TotpSection({ item }: { item: TypedItem }) {
+  const backend = useBackend();
+  const { showToast } = useApp();
+  const fields = item as unknown as TotpFields;
+  const [entry, setEntry] = useState<TotpEntry | null>(null);
+  const [secretRevealed, setSecretRevealed] = useState(false);
+
+  // The code rolls with the wall clock, so it has to be re-read while the item
+  // is open. Without this the pane showed nothing at all for this item type.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const entries = await backend.authenticatorEntries();
+        if (!cancelled) setEntry(entries.find((candidate) => candidate.id === item.id) ?? null);
+      } catch {
+        if (!cancelled) setEntry(null);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [backend, item.id]);
+
+  const copyCode = async () => {
+    if (!entry?.code) return;
+    try {
+      await navigator.clipboard.writeText(entry.code);
+      showToast({ title: "Code copied", tone: "success" });
+    } catch {
+      showToast({ title: "The clipboard is not available", tone: "error" });
+    }
+  };
+
+  const advance = async () => {
+    try {
+      const counter = await backend.authenticatorAdvanceCounter(item.id);
+      showToast({ title: `Moved to counter ${counter}`, tone: "success" });
+    } catch (cause) {
+      showToast({
+        title: cause instanceof Error ? cause.message : "Could not advance the counter",
+        tone: "error",
+      });
+    }
+  };
+
+  const counterBased = (entry?.otpType ?? fields.otp_type) === "hotp";
+  const code = entry?.code ?? "";
+  const half = Math.ceil(code.length / 2);
+  const filled = counterBased ? 100 : Math.max(0, Math.min(100, (1 - (entry?.progress ?? 1)) * 100));
+
+  return (
+    <section className="space-y-1">
+      <div className="rounded-xl border border-accent/30 bg-accent-soft/40 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+              Authenticator code
+            </p>
+            <button
+              type="button"
+              onClick={() => void copyCode()}
+              title="Copy code"
+              className="mt-1.5 block font-mono text-[30px] leading-none tracking-[0.14em] tabular-nums transition-colors hover:text-accent"
+            >
+              {code ? `${code.slice(0, half)} ${code.slice(half)}` : "——— ———"}
+            </button>
+            <div className="mt-3 h-1 w-52 overflow-hidden rounded-full bg-border">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear"
+                style={{ width: `${filled}%` }}
+              />
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {counterBased ? `#${entry?.counter ?? fields.counter}` : `${entry?.remaining ?? 0}s`}
+            </span>
+            <Button variant="ghost" size="sm" className="h-7 px-2 text-accent" onClick={() => void copyCode()}>
+              <Copy className="h-3.5 w-3.5" />
+              Copy
+            </Button>
+            {counterBased ? (
+              <Button variant="ghost" size="sm" className="h-7 px-2 text-accent" onClick={() => void advance()}>
+                <RefreshCw className="h-3.5 w-3.5" />
+                Next
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        {entry?.error ? <p className="mt-2 text-[11.5px] text-danger">{entry.error}</p> : null}
+      </div>
+
+      {fields.issuer ? <DetailRow label="Issuer" value={fields.issuer} /> : null}
+      {fields.account ? <DetailRow label="Account" value={fields.account} /> : null}
+      <DetailRow
+        label="Secret"
+        value={fields.secret}
+        secret
+        revealed={secretRevealed}
+        onToggleReveal={() => setSecretRevealed((current) => !current)}
+      />
+      <p className="px-2 pt-2 text-[11.5px] text-muted-foreground">
+        {(fields.algorithm || "sha1").toUpperCase()} · {fields.digits || 6} digits ·{" "}
+        {fields.period || 30}s · {(fields.otp_type || "totp").toUpperCase()}
+        {counterBased ? ` · counter ${fields.counter}` : ""}
+      </p>
+    </section>
+  );
+}
+
+function SecretSection({ item }: { item: TypedItem }) {
+  const backend = useBackend();
+  const { settings, showToast } = useApp();
+  const fields = item as unknown as SecretFields;
+  const [revealed, setRevealed] = useState<Record<number, string>>({});
+
+  const copy = async (index: number, label: string) => {
+    try {
+      await backend.secretCopy(item.id, index);
+      showToast({
+        title: `${label} copied`,
+        description:
+          settings.clipboard_clear_secs > 0
+            ? `Clipboard clears in ${settings.clipboard_clear_secs}s`
+            : undefined,
+        tone: "success",
+      });
+    } catch {
+      showToast({ title: "Could not copy that field", tone: "error" });
+    }
+  };
+
+  const reveal = async (index: number) => {
+    if (revealed[index]) {
+      setRevealed((current) => {
+        const next = { ...current };
+        delete next[index];
+        return next;
+      });
+      return;
+    }
+    try {
+      const value = await backend.secretReveal(item.id, index);
+      setRevealed((current) => ({ ...current, [index]: value }));
+    } catch (cause) {
+      showToast({
+        title: cause instanceof Error ? cause.message : "Could not reveal the secret",
+        tone: "error",
+      });
+    }
+  };
+
+  return (
+    <section className="space-y-1">
+      <div className="flex flex-wrap gap-1.5 px-2 pb-2">
+        <Badge tone="accent">{fields.environment || "development"}</Badge>
+        {fields.category ? <Badge tone="muted">{fields.category}</Badge> : null}
+        {fields.expires_at ? (
+          <Badge tone="warning">expires {formatDate(fields.expires_at)}</Badge>
+        ) : null}
+        {fields.rotate_every_days ? (
+          <Badge tone="muted">rotate every {fields.rotate_every_days}d</Badge>
+        ) : null}
+      </div>
+
+      {fields.fields.length === 0 ? (
+        <p className="px-2 text-[12.5px] text-muted-foreground">No secret fields yet.</p>
+      ) : (
+        fields.fields.map((field, index) => (
+          <DetailRow
+            key={`${field.label}-${index}`}
+            label={field.label || "Value"}
+            value={revealed[index] ?? ""}
+            secret={field.concealed}
+            revealed={Boolean(revealed[index])}
+            onToggleReveal={field.concealed ? () => void reveal(index) : undefined}
+            onCopy={field.value ? () => void copy(index, field.label || "Secret") : undefined}
+          />
+        ))
+      )}
+
+      {fields.last_rotated_at ? (
+        <p className="px-2 pt-2 text-[11.5px] text-muted-foreground">
+          Last rotated {formatDate(fields.last_rotated_at)} · reveals and copies are logged locally
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 function DetailRow({
