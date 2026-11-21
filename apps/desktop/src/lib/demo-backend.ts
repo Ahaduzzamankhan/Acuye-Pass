@@ -28,6 +28,10 @@ import {
   type PassphraseOptions,
   type PasswordOptions,
   type PasswordStrength,
+  type RecoverySetupResult,
+  type RecoveryStatus,
+  type RecoveryUnlock,
+  type SecurityQuestionInput,
   type SecurityReport,
   type SessionView,
   type StorageInfo,
@@ -58,6 +62,17 @@ interface PreviewAccount {
   vaultName: string;
 }
 
+interface PreviewQuestion {
+  question: string;
+  answer: string;
+}
+
+/** Preview-only recovery enrolment. Never encrypted; preview data is fake. */
+interface PreviewRecovery {
+  code: string;
+  questions: PreviewQuestion[];
+}
+
 interface PreviewState {
   username: string | null;
   secret: string | null;
@@ -66,9 +81,23 @@ interface PreviewState {
   unlocked: boolean;
   accounts: PreviewAccount[];
   activeVaultId: string | null;
+  recovery?: Record<string, PreviewRecovery>;
 }
 
 const now = () => Math.floor(Date.now() / 1000);
+
+const DEMO_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+function demoRecoveryCode(): string {
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  const chars = Array.from(bytes, (byte) => DEMO_CODE_ALPHABET[byte % 32]);
+  return chars.join("").replace(/(.{4})(?=.)/g, "$1-");
+}
+
+function normalizePreviewCode(value: string): string {
+  return value.toUpperCase().replace(/[^0-9A-Z]/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
+}
 
 const DEMO_ITEMS: Array<{ title: string; fields: ItemFields; notes?: string; tags?: string[] }> = [
   {
@@ -398,6 +427,110 @@ export class DemoBackend implements Backend {
 
   async sessionTouch() {
     return this.state.unlocked ? this.session() : null;
+  }
+
+  async autostartEnabled(): Promise<boolean> {
+    return Boolean(localStorage.getItem("acuye-preview-autostart"));
+  }
+
+  async setAutostart(enabled: boolean): Promise<boolean> {
+    if (enabled) localStorage.setItem("acuye-preview-autostart", "1");
+    else localStorage.removeItem("acuye-preview-autostart");
+    return enabled;
+  }
+
+  private previewAccount(vaultId: string, password: string): PreviewAccount {
+    const account = this.state.accounts.find((candidate) => candidate.vaultId === vaultId);
+    if (!account || account.secret !== password) {
+      throw new BackendError("authentication_failed", "Authentication failed");
+    }
+    return account;
+  }
+
+  async recoveryStatus(vaultId: string): Promise<RecoveryStatus> {
+    const entry = this.state.recovery?.[vaultId];
+    return { code: Boolean(entry?.code), questions: (entry?.questions.length ?? 0) > 0 };
+  }
+
+  async recoveryQuestions(vaultId: string): Promise<string[]> {
+    return (this.state.recovery?.[vaultId]?.questions ?? []).map((entry) => entry.question);
+  }
+
+  async enableRecovery(
+    vaultId: string,
+    password: string,
+    questions?: SecurityQuestionInput[] | null,
+  ): Promise<RecoverySetupResult> {
+    this.previewAccount(vaultId, password);
+    const enrolled = (questions ?? []).map((entry) => ({
+      question: entry.question.trim(),
+      answer: entry.answer.trim().toLowerCase(),
+    }));
+    if (questions && enrolled.length !== 3) {
+      throw new BackendError("validation", "Choose exactly 3 security questions");
+    }
+    const code = demoRecoveryCode();
+    this.state.recovery = {
+      ...(this.state.recovery ?? {}),
+      [vaultId]: { code, questions: enrolled },
+    };
+    this.persist();
+    return { recoveryCode: code, questions: enrolled.length };
+  }
+
+  async disableRecovery(vaultId: string, password: string): Promise<void> {
+    this.previewAccount(vaultId, password);
+    if (this.state.recovery) delete this.state.recovery[vaultId];
+    this.persist();
+  }
+
+  private finishPreviewRecovery(account: PreviewAccount, newPassword: string): RecoveryUnlock {
+    if (newPassword.length < 12) {
+      throw new BackendError("validation", "Choose a stronger master password");
+    }
+    account.secret = newPassword;
+    this.state.secret = newPassword;
+    this.state.username = account.username;
+    this.state.activeVaultId = account.vaultId;
+    this.state.unlocked = true;
+    if (this.state.items.length === 0) this.state.items = seedItems(true);
+    const code = demoRecoveryCode();
+    this.state.recovery = {
+      ...(this.state.recovery ?? {}),
+      [account.vaultId]: { code, questions: [] },
+    };
+    this.persist();
+    return { session: this.session(), recoveryCode: code };
+  }
+
+  async recoverWithCode(code: string, newPassword: string): Promise<RecoveryUnlock> {
+    const wanted = normalizePreviewCode(code);
+    const match = Object.entries(this.state.recovery ?? {}).find(
+      ([, entry]) => normalizePreviewCode(entry.code) === wanted,
+    );
+    const account = match
+      ? this.state.accounts.find((candidate) => candidate.vaultId === match[0])
+      : undefined;
+    if (!account) throw new BackendError("authentication_failed", "Authentication failed");
+    return this.finishPreviewRecovery(account, newPassword);
+  }
+
+  async recoverWithAnswers(
+    vaultId: string,
+    answers: string[],
+    newPassword: string,
+  ): Promise<RecoveryUnlock> {
+    const entry = this.state.recovery?.[vaultId];
+    const account = this.state.accounts.find((candidate) => candidate.vaultId === vaultId);
+    if (!entry || entry.questions.length === 0 || !account) {
+      throw new BackendError("validation", "No security questions are set for this vault");
+    }
+    const correct = entry.questions.every(
+      (question, index) =>
+        question.answer === (answers[index] ?? "").trim().toLowerCase(),
+    );
+    if (!correct) throw new BackendError("authentication_failed", "Authentication failed");
+    return this.finishPreviewRecovery(account, newPassword);
   }
 
   async changeMasterPassword(currentPassword: string, newPassword: string): Promise<SessionView> {

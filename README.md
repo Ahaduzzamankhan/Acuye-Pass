@@ -7,8 +7,9 @@ service.
 
 > **Status: pre-1.0.** The Windows desktop app is functionally complete but has
 > not been independently audited. Do not make it the only copy of credentials
-> you cannot afford to lose. A forgotten master password cannot be recovered —
-> that is a design decision, not a bug.
+> you cannot afford to lose. A forgotten master password cannot be recovered
+> unless you enrolled the optional recovery code (or the three security
+> questions) before losing it — there is no server-side reset.
 
 ---
 
@@ -166,7 +167,8 @@ No telemetry, analytics, crash reporting or account endpoint exists in the build
   or screen while the vault is unlocked.
 - Clipboard snooping before the auto-clear timer fires.
 - Anyone who knows your master password.
-- A lost, unbacked-up vault file. There is no recovery path by design.
+- A deleted or lost vault file with no backup. A recovery code restores access
+  to a vault whose master password is forgotten — it cannot undelete a file.
 - An unaudited implementation. The cryptography is documented and tested, not
   externally audited — see [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -199,8 +201,14 @@ Full details: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Features
 
-- **Username + master password only.** No biometrics, no Windows Hello, no PIN,
-  no recovery key.
+- **Username + master password only.** No biometrics, no Windows Hello, no PIN.
+- **Account recovery, optional and local.** A one-time Crockford-base32 recovery
+  code, plus three security questions if you want them, wrap the vault key with
+  Argon2id-derived keys. Recovery sets a new master password, rotates the vault
+  key and issues a fresh code. See [docs/SECURITY.md](docs/SECURITY.md).
+- **Starts at login, hidden in the tray.** Registered on first run; closing the
+  window keeps the app in the tray so the vault stays a keystroke away. Locking
+  and the idle timeout still apply. Toggle it in Settings → Preferences.
 - **Multiple accounts.** Each account is a separate vault with its own username,
   master password and key, all inside the same encrypted database. Pick one on
   the unlock screen or add another from there, the account menu or Vaults.
@@ -239,7 +247,7 @@ this app loses — is in [benchmark.md](benchmark.md). The short version:
 | Account / cloud | None | Yes (or self-host) | Yes |
 | Browser autofill | **Extension** (auto-fills one matching login) | Yes | Yes |
 | Passkeys | **No** | Yes | Yes |
-| Cloud sync / mobile | **No** | Yes | Yes |
+| Cloud sync / mobile | **No sync; Android app (CI APK)** | Yes | Yes |
 | Sharing / emergency access | **No** | Yes | Yes |
 | Independent audit | **None yet** | Multiple | Yes |
 
@@ -277,7 +285,7 @@ is never shipped.
 apps/desktop            React + TypeScript + Vite + Tauri 2 frontend
 apps/desktop/src-tauri  Tauri commands, window control, updater wiring
 apps/browser-extension  Manifest V3 popup + native messaging bridge
-apps/mobile             Empty React Native scaffold (future work)
+apps/mobile             React Native Android client over the Rust core (JNI)
 crates/acuye-*          Rust workspace: core, crypto, vault, storage, auth,
                         generator, totp, breach, lan, sync, protocol, import,
                         export, updater, platform, ffi, browser-host
@@ -308,7 +316,12 @@ docs/                   Architecture, security, privacy, development, features,
 - The browser extension is Chrome/Chromium only and loaded unpacked (not in a
   store). It fills one matching login form and never saves, prompts or creates
   passkeys; automatic filling needs the vault to be unlocked first.
-- No cloud sync, sharing, emergency access or mobile app.
+- No cloud sync, sharing or emergency access.
+- The Android client is built by CI as an installable APK (not a store listing)
+  and is read-mostly: unlock, search, reveal/copy, TOTP and create logins. No
+  editing, deletion, import/export, sync or Android autofill service.
+- Security questions are weaker than the master password. They are optional and
+  only protect as well as the answers you choose.
 - `acuye-sync/1` is a specification plus a transport trait; no provider ships.
 - Clipboard contents remain readable by other applications until the clear timer
   fires.

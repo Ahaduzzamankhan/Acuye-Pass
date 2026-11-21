@@ -24,7 +24,11 @@ import type {
   PassphraseOptions,
   PasswordOptions,
   PasswordStrength,
+  RecoverySetupResult,
+  RecoveryStatus,
+  RecoveryUnlock,
   SecretAccessEntry,
+  SecurityQuestionInput,
   SecretAlert,
   SecurityReport,
   SessionView,
@@ -51,6 +55,21 @@ export interface Backend {
   sessionTouch(): Promise<SessionView | null>;
   changeMasterPassword(currentPassword: string, newPassword: string): Promise<SessionView>;
   getAccount(): Promise<AccountSummary | null>;
+
+  /** Whether the app is registered to start at login. */
+  autostartEnabled(): Promise<boolean>;
+  setAutostart(enabled: boolean): Promise<boolean>;
+
+  recoveryStatus(vaultId: string): Promise<RecoveryStatus>;
+  recoveryQuestions(vaultId: string): Promise<string[]>;
+  enableRecovery(
+    vaultId: string,
+    password: string,
+    questions?: SecurityQuestionInput[] | null,
+  ): Promise<RecoverySetupResult>;
+  disableRecovery(vaultId: string, password: string): Promise<void>;
+  recoverWithCode(code: string, newPassword: string): Promise<RecoveryUnlock>;
+  recoverWithAnswers(vaultId: string, answers: string[], newPassword: string): Promise<RecoveryUnlock>;
 
   listItems(query?: string, itemType?: ItemType | null, favoritesOnly?: boolean): Promise<ItemSummary[]>;
   getItem(id: string): Promise<Item>;

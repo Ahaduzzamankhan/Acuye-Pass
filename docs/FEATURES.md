@@ -181,8 +181,32 @@ discovery service and no server.
   UI — disabling the UI timer does not extend the session.
 - Manual lock clears decrypted items and the vault key from memory.
 - Configurable clipboard clear delay for copied secrets.
-- No biometric unlock, no Windows Hello, no PIN, no password recovery, no
-  server-side reset.
+- No biometric unlock, no Windows Hello, no PIN, no server-side reset.
+
+## Account recovery (optional)
+
+- A **recovery code** is a 160-bit Crockford-base32 secret (`XXXX-XXXX-…`, eight
+  groups). It is shown once, when you enable recovery; the app stores only a
+  salt, an Argon2id verifier and the vault key wrapped under the code.
+- **Three security questions** can be enrolled alongside the code. Answers are
+  normalised (case-insensitive, collapsed whitespace) and stored only as
+  Argon2id verifiers; every answer must match.
+- Both are set up in Settings → Authentication and require the master password.
+  Turning recovery off deletes every enrolment.
+- Recovering opens the vault, sets a new master password, rotates the KDF salt,
+  the password-derived keys and the vault key, re-encrypts every item in one
+  transaction, then issues a **fresh** recovery code and clears the questions.
+- "Forgot your master password?" on the unlock screen takes either path. With
+  no enrolment, there is still no way in — the vault key exists only wrapped by
+  your password.
+
+## Startup and tray
+
+- Registered to start at login on first run (`tauri-plugin-autostart`), with
+  `--hidden`, so no window appears and the vault stays locked.
+- Closing the window hides it to the tray instead of quitting; the tray menu has
+  **Open Acuye Pass**, **Lock vault** and **Quit**.
+- Toggle "Start at login" in Settings → Preferences; it reads the real OS state.
 
 ## Updates
 
@@ -208,5 +232,7 @@ discovery service and no server.
 - Cloud sync provider (the `acuye-sync/1` protocol ships as a spec plus a
   transport trait only).
 - Multiple users, sharing, collections, emergency access, secure send links.
-- Mobile app (`apps/mobile` is an empty scaffold).
+- Android app features beyond unlock/search/reveal/copy/TOTP/create-login:
+  editing, deleting, import/export, sync, recovery settings, autofill service.
+- A Play Store listing or signed store-ready Android build.
 - macOS/Linux release artifacts, CLI, SSH agent.

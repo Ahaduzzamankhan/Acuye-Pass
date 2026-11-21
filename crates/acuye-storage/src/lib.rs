@@ -15,7 +15,7 @@ use std::time::Duration;
 use acuye_core::{AccountRecord, AcuyeError, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 /// XChaCha20-Poly1305 nonce length. Rows must match exactly; a longer nonce can
 /// never be opened and would only surface as a failed unlock.
 pub const NONCE_LEN: usize = 24;
@@ -146,6 +146,27 @@ const MIGRATIONS: &[&str] = &[
     DROP TABLE accounts;
     ALTER TABLE accounts_v4 RENAME TO accounts;
     "#,
+    // v5: account recovery. A recovery row wraps the vault key under a key that
+    // is derived from the recovery code (kind = 'code') or from the three
+    // security answers (kind = 'questions'). The row never contains the code,
+    // the answers or the vault key in the clear.
+    r#"
+    CREATE TABLE recovery (
+        vault_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        kdf_algorithm TEXT NOT NULL,
+        kdf_memory_kib INTEGER NOT NULL,
+        kdf_iterations INTEGER NOT NULL,
+        kdf_parallelism INTEGER NOT NULL,
+        salt BLOB NOT NULL,
+        verifier BLOB NOT NULL,
+        wrapped_vault_key BLOB NOT NULL,
+        vault_key_nonce BLOB NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (vault_id, kind)
+    );
+    "#,
 ];
 
 /// One approved LAN peer. Public keys and an address only.
@@ -169,6 +190,26 @@ pub struct SecretAccessRow {
     pub item_id: String,
     pub action: String,
     pub at: i64,
+}
+
+/// One recovery enrolment: the vault key wrapped under a key derived from the
+/// recovery code or the security answers. Contains no plaintext secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryRow {
+    pub vault_id: String,
+    /// `code` or `questions`.
+    pub kind: String,
+    pub kdf_algorithm: String,
+    pub kdf_memory_kib: u32,
+    pub kdf_iterations: u32,
+    pub kdf_parallelism: u32,
+    pub salt: Vec<u8>,
+    pub verifier: Vec<u8>,
+    pub wrapped_vault_key: Vec<u8>,
+    pub vault_key_nonce: Vec<u8>,
+    /// JSON: per-question metadata for `questions`, `{}` for `code`.
+    pub payload: String,
+    pub created_at: i64,
 }
 
 /// One encrypted item row.
@@ -394,6 +435,134 @@ impl Database {
         if updated != 1 {
             return Err(AcuyeError::NotFound("account".into()));
         }
+        Ok(())
+    }
+
+    // ----- account recovery ------------------------------------------------
+
+    fn has_table(&self, name: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(storage_err)?;
+        Ok(count > 0)
+    }
+
+    /// Every recovery enrolment, used when restoring a backup.
+    pub fn recovery_all(&self) -> Result<Vec<RecoveryRow>> {
+        if !self.has_table("recovery")? {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT vault_id, kind, kdf_algorithm, kdf_memory_kib, kdf_iterations,
+                        kdf_parallelism, salt, verifier, wrapped_vault_key,
+                        vault_key_nonce, payload, created_at
+                 FROM recovery ORDER BY vault_id, kind",
+            )
+            .map_err(storage_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RecoveryRow {
+                    vault_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    kdf_algorithm: row.get(2)?,
+                    kdf_memory_kib: row.get(3)?,
+                    kdf_iterations: row.get(4)?,
+                    kdf_parallelism: row.get(5)?,
+                    salt: row.get(6)?,
+                    verifier: row.get(7)?,
+                    wrapped_vault_key: row.get(8)?,
+                    vault_key_nonce: row.get(9)?,
+                    payload: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })
+            .map_err(storage_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(storage_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Recovery enrolments of one vault.
+    pub fn recovery_rows(&self, vault_id: &str) -> Result<Vec<RecoveryRow>> {
+        Ok(self
+            .recovery_all()?
+            .into_iter()
+            .filter(|row| row.vault_id == vault_id)
+            .collect())
+    }
+
+    /// Insert or replace one enrolment (one per vault and kind).
+    pub fn upsert_recovery(&self, row: &RecoveryRow) -> Result<()> {
+        if row.salt.len() < 16 || row.verifier.len() != 32 || row.wrapped_vault_key.is_empty() {
+            return Err(AcuyeError::Validation("invalid recovery record".into()));
+        }
+        if row.kind != "code" && row.kind != "questions" {
+            return Err(AcuyeError::Validation("invalid recovery kind".into()));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO recovery (vault_id, kind, kdf_algorithm, kdf_memory_kib,
+                    kdf_iterations, kdf_parallelism, salt, verifier, wrapped_vault_key,
+                    vault_key_nonce, payload, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 ON CONFLICT(vault_id, kind) DO UPDATE SET
+                    kdf_algorithm = excluded.kdf_algorithm,
+                    kdf_memory_kib = excluded.kdf_memory_kib,
+                    kdf_iterations = excluded.kdf_iterations,
+                    kdf_parallelism = excluded.kdf_parallelism,
+                    salt = excluded.salt,
+                    verifier = excluded.verifier,
+                    wrapped_vault_key = excluded.wrapped_vault_key,
+                    vault_key_nonce = excluded.vault_key_nonce,
+                    payload = excluded.payload,
+                    created_at = excluded.created_at",
+                params![
+                    row.vault_id,
+                    row.kind,
+                    row.kdf_algorithm,
+                    row.kdf_memory_kib,
+                    row.kdf_iterations,
+                    row.kdf_parallelism,
+                    row.salt,
+                    row.verifier,
+                    row.wrapped_vault_key,
+                    row.vault_key_nonce,
+                    row.payload,
+                    row.created_at,
+                ],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Forget one recovery method of one vault.
+    pub fn delete_recovery_kind(&self, vault_id: &str, kind: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM recovery WHERE vault_id = ?1 AND kind = ?2",
+                params![vault_id, kind],
+            )
+            .map_err(storage_err)?;
+        Ok(())
+    }
+
+    /// Forget every recovery method for one vault.
+    pub fn delete_recovery(&self, vault_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM recovery WHERE vault_id = ?1",
+                params![vault_id],
+            )
+            .map_err(storage_err)?;
         Ok(())
     }
 
@@ -954,6 +1123,7 @@ impl Database {
         let sync_outbox = source_db.sync_outbox_rows()?;
         let lan_peers = source_db.lan_peers()?;
         let secret_access = source_db.secret_access_all()?;
+        let recovery = source_db.recovery_all()?;
 
         let tx = self.conn.transaction().map_err(storage_err)?;
         tx.execute("DELETE FROM items", []).map_err(storage_err)?;
@@ -969,6 +1139,8 @@ impl Database {
         tx.execute("DELETE FROM lan_peers", [])
             .map_err(storage_err)?;
         tx.execute("DELETE FROM secret_access", [])
+            .map_err(storage_err)?;
+        tx.execute("DELETE FROM recovery", [])
             .map_err(storage_err)?;
         {
             let mut stmt = tx
@@ -1102,6 +1274,33 @@ impl Database {
             for row in &secret_access {
                 stmt.execute(params![row.item_id, row.action, row.at])
                     .map_err(storage_err)?;
+            }
+        }
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO recovery (vault_id, kind, kdf_algorithm, kdf_memory_kib,
+                        kdf_iterations, kdf_parallelism, salt, verifier, wrapped_vault_key,
+                        vault_key_nonce, payload, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                )
+                .map_err(storage_err)?;
+            for row in &recovery {
+                stmt.execute(params![
+                    row.vault_id,
+                    row.kind,
+                    row.kdf_algorithm,
+                    row.kdf_memory_kib,
+                    row.kdf_iterations,
+                    row.kdf_parallelism,
+                    row.salt,
+                    row.verifier,
+                    row.wrapped_vault_key,
+                    row.vault_key_nonce,
+                    row.payload,
+                    row.created_at,
+                ])
+                .map_err(storage_err)?;
             }
         }
         tx.commit().map_err(storage_err)?;

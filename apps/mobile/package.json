@@ -2,16 +2,17 @@
   "name": "@acuye/mobile",
   "private": true,
   "version": "0.1.4",
-  "description": "Acuye Pass mobile shell (scaffold only — not implemented)",
+  "description": "Acuye Pass for Android \u2014 React Native UI over the shared Rust core",
   "scripts": {
     "start": "react-native start",
     "android": "react-native run-android",
-    "ios": "react-native run-ios",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },
   "dependencies": {
     "react": "18.3.1",
-    "react-native": "0.76.6"
+    "react-native": "0.76.6",
+    "@react-native-clipboard/clipboard": "^1.16.1"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

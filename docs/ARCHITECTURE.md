@@ -50,7 +50,8 @@ Two implementations exist:
 | `acuye-export` | Encrypted envelope and CSV/JSON export |
 | `acuye-updater` | Channel selection, asset allowlists, minisign verification, downloads |
 | `acuye-platform` | Data paths, URL validation/SSRF guards, favicon fetching |
-| `acuye-ffi` | JSON helpers for future non-Tauri shells (no mobile UI yet) |
+| `acuye-ffi` | Shared mobile session (vault open/unlock/list/reveal/TOTP/create) plus JNI entry points for the Android app |
+| `apps/mobile` | React Native Android UI (`App.tsx`, `src/native.ts`) over `acuye-ffi`; Gradle project in `apps/mobile/android` |
 | `acuye-browser-host` | Chrome native-messaging host: reads the database, unlocks one vault in memory, answers popup `list`/`fill` requests |
 
 Dependency direction is one-way: `core` knows nothing about crypto or storage;

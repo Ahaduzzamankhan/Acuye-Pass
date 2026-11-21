@@ -120,11 +120,33 @@ prerelease consent, sidebar collapse.
 5. Add tests where the logic is not purely presentational.
 6. Register it in the `invoke_handler` list in `src-tauri/src/lib.rs`.
 
-## Mobile
+## Android
 
-`apps/mobile` is an empty React Native scaffold. Do not build a second
-implementation of the security model there — a future client should consume the
-Rust core through `acuye-ffi`.
+`apps/mobile` is a React Native client over the same Rust crates. It does not
+reimplement the security model: the UI calls `NativeModules.AcuyeNative`, which
+is implemented in `crates/acuye-ffi` (`mobile.rs` for the session, `android.rs`
+for JNI) and returns JSON strings.
+
+Build it the way CI does:
+
+```bash
+npm install --prefix apps/mobile
+rustup target add aarch64-linux-android armv7-linux-androideabi
+cargo install cargo-ndk
+cargo ndk -t arm64-v8a -t armeabi-v7a \
+  -o apps/mobile/android/app/src/main/jniLibs build -p acuye-ffi --release
+cd apps/mobile/android && gradle assembleRelease
+```
+
+Requirements: JDK 17, Android SDK platform 36, build-tools 36.0.0, NDK
+27.1.12297006. The APK targets `minSdk 24` (Android 7) and ships
+`armeabi-v7a` + `arm64-v8a`. `.github/workflows/android.yml` runs exactly this
+and uploads `app-release.apk`, signed with a CI-generated keystore — installable
+for testing, not store-ready.
+
+The shared session is unit-tested on the host (`cargo test -p acuye-ffi`), so
+JNI changes can be verified without an emulator. The Android UI itself needs a
+device or emulator to test; CI only proves it compiles and packages.
 
 ## Troubleshooting
 

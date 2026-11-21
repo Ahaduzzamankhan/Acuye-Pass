@@ -1,0 +1,111 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build APK (armv7a + arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install JavaScript dependencies
+        working-directory: apps/mobile
+        run: npm install --no-audit --no-fund
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build the shared Rust core for both ABIs
+        run: |
+          cargo ndk \
+            --platform 24 \
+            -t arm64-v8a -t armeabi-v7a \
+            -o apps/mobile/android/app/src/main/jniLibs \
+            build -p acuye-ffi --release
+
+      - name: Check the JNI libraries exist
+        run: |
+          ls -l apps/mobile/android/app/src/main/jniLibs/arm64-v8a/libacuye_ffi.so
+          ls -l apps/mobile/android/app/src/main/jniLibs/armeabi-v7a/libacuye_ffi.so
+
+      - name: Generate a CI signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/acuye-ci.keystore" \
+            -storepass android -keypass android \
+            -alias acuye -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Acuye CI, O=Fluxenite, C=US"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build the release APK
+        working-directory: apps/mobile/android
+        env:
+          ACUYE_KEYSTORE_PATH: ${{ runner.temp }}/acuye-ci.keystore
+          ACUYE_KEYSTORE_PASSWORD: android
+          ACUYE_KEY_ALIAS: acuye
+          ACUYE_KEY_PASSWORD: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Inspect the APK
+        run: |
+          APK=apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          ls -l "$APK"
+          unzip -l "$APK" | grep -E "libacuye_ffi.so" || (echo "missing Rust library" && exit 1)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acuye-pass-android
+          path: apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

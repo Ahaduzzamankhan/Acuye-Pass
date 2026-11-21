@@ -7,7 +7,17 @@ license.workspace = true
 
 [dependencies]
 acuye-core = { workspace = true }
+acuye-crypto = { workspace = true }
+acuye-vault = { workspace = true }
+acuye-storage = { workspace = true }
 acuye-auth = { workspace = true }
 acuye-generator = { workspace = true }
+acuye-totp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[lib]
+crate-type = ["rlib", "cdylib"]

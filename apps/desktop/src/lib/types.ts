@@ -285,6 +285,28 @@ export interface ImportResult {
   renamed: number;
 }
 
+/** Which recovery methods a vault has enrolled. */
+export interface RecoveryStatus {
+  code: boolean;
+  questions: boolean;
+}
+
+export interface SecurityQuestionInput {
+  question: string;
+  answer: string;
+}
+
+export interface RecoverySetupResult {
+  recoveryCode: string;
+  questions: number;
+}
+
+/** A vault opened through recovery, with its rotated one-time code. */
+export interface RecoveryUnlock {
+  session: SessionView;
+  recoveryCode: string;
+}
+
 export interface AccountSummary {
   username: string;
   vault_id: string;

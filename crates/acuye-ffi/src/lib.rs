@@ -8,6 +8,10 @@
 //! The functions here are real and tested; they demonstrate that the domain,
 //! authentication and generator crates are platform independent.
 
+#[cfg(target_os = "android")]
+mod android;
+pub mod mobile;
+
 use acuye_core::AcuyeError;
 
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,7 +86,7 @@ pub fn core_status_json() -> String {
         "version": CORE_VERSION,
         "sync_protocol": acuye_protocol_version(),
         "biometrics": false,
-        "mobile_implemented": false,
+        "mobile_implemented": true,
     })
     .to_string()
 }
@@ -101,7 +105,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&core_status_json()).unwrap();
         assert_eq!(value["ok"], true);
         assert_eq!(value["biometrics"], false);
-        assert_eq!(value["mobile_implemented"], false);
+        assert_eq!(value["mobile_implemented"], true);
         assert_eq!(value["version"], CORE_VERSION);
     }
 

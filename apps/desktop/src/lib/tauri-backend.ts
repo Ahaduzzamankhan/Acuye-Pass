@@ -32,6 +32,10 @@ import type {
   PassphraseOptions,
   PasswordOptions,
   PasswordStrength,
+  RecoverySetupResult,
+  RecoveryStatus,
+  RecoveryUnlock,
+  SecurityQuestionInput,
   SecurityReport,
   SessionView,
   StorageInfo,
@@ -87,6 +91,36 @@ export class TauriBackend implements Backend {
   }
   getAccount() {
     return call<AccountSummary | null>("get_account");
+  }
+
+  autostartEnabled() {
+    return call<boolean>("autostart_enabled");
+  }
+  setAutostart(enabled: boolean) {
+    return call<boolean>("set_autostart", { enabled });
+  }
+
+  recoveryStatus(vaultId: string) {
+    return call<RecoveryStatus>("recovery_status", { vaultId });
+  }
+  recoveryQuestions(vaultId: string) {
+    return call<string[]>("recovery_questions", { vaultId });
+  }
+  enableRecovery(vaultId: string, password: string, questions?: SecurityQuestionInput[] | null) {
+    return call<RecoverySetupResult>("enable_recovery", {
+      vaultId,
+      password,
+      questions: questions ?? null,
+    });
+  }
+  disableRecovery(vaultId: string, password: string) {
+    return call<void>("disable_recovery", { vaultId, password });
+  }
+  recoverWithCode(code: string, newPassword: string) {
+    return call<RecoveryUnlock>("recover_with_code", { code, newPassword });
+  }
+  recoverWithAnswers(vaultId: string, answers: string[], newPassword: string) {
+    return call<RecoveryUnlock>("recover_with_answers", { vaultId, answers, newPassword });
   }
 
   listItems(query?: string, itemType?: ItemType | null, favoritesOnly?: boolean) {

@@ -9,6 +9,8 @@ mod advanced;
 mod commands;
 mod data;
 mod error;
+mod recovery;
+mod startup;
 mod state;
 mod updates;
 mod window;
@@ -21,22 +23,30 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .setup(|app| {
             let state = AppState::init(app.handle())?;
             app.manage(state);
+            startup::setup_tray(app)?;
+            startup::apply_autostart(
+                app.handle(),
+                std::env::args().any(|argument| argument == "--hidden"),
+            );
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title("Acuye Pass");
             }
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // Drop key material as early as possible on shutdown.
-                if let Some(state) = window.try_state::<AppState>() {
-                    if let Ok(mut core) = state.core.lock() {
-                        core.session = None;
-                    }
-                }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Closing the window hides it to the tray so the vault stays
+                // available; quitting happens from the tray menu. Hiding never
+                // bypasses the idle auto-lock.
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -52,6 +62,16 @@ pub fn run() {
             commands::change_master_password,
             commands::rename_vault,
             commands::get_account,
+            // startup
+            startup::autostart_enabled,
+            startup::set_autostart,
+            // account recovery
+            recovery::recovery_status,
+            recovery::recovery_questions,
+            recovery::enable_recovery,
+            recovery::disable_recovery,
+            recovery::recover_with_code,
+            recovery::recover_with_answers,
             // vault
             commands::list_items,
             commands::get_item,

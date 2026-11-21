@@ -75,6 +75,8 @@ interface AppContextValue {
   addAccount: (username: string, password: string, vaultName: string) => Promise<void>;
   requestAddAccount: () => Promise<void>;
   unlock: (vaultId: string | null, username: string, password: string) => Promise<void>;
+  /** Adopt a session the backend opened itself (account recovery). */
+  adoptSession: (session: SessionView) => Promise<void>;
   lock: (reason?: string) => Promise<void>;
   logout: () => Promise<void>;
   createItem: (input: ItemFieldsInput) => Promise<Item>;
@@ -291,6 +293,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setAuthMode("unlock");
       lastActivity.current = Date.now();
       setStatus((current) => (current ? { ...current, locked: false, session: next } : current));
+    },
+    [backend],
+  );
+
+  const adoptSession = useCallback(
+    async (next: SessionView) => {
+      setSession(next);
+      setAuthMode("unlock");
+      lastActivity.current = Date.now();
+      setStatus((current) =>
+        current ? { ...current, hasAccount: true, username: next.username, locked: false, session: next } : current,
+      );
+      setAccounts(await backend.listAccounts().catch(() => [] as AccountSummary[]));
     },
     [backend],
   );
@@ -513,6 +528,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addAccount,
       requestAddAccount,
       unlock,
+      adoptSession,
       lock,
       logout,
       createItem,
@@ -553,6 +569,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addAccount,
       requestAddAccount,
       unlock,
+      adoptSession,
       lock,
       logout,
       createItem,

@@ -44,6 +44,9 @@ ciphertext. It never contains titles, usernames inside items, passwords, URLs,
 notes, card numbers, TOTP secrets or secret-manager values in plaintext. A
 regression test asserts this.
 
+The `recovery` table adds salts, verifiers and a second wrapped copy of the
+vault key; it contains no code, answer or plaintext secret.
+
 The database file is the security boundary. Deleting the WAL sidecar does not
 reveal items; a torn write surfaces as an integrity failure, not as plaintext.
 
@@ -56,6 +59,35 @@ local:
 1. Password → Argon2id → verifier comparison.
 2. Optional LAN pairing: Noise XX handshake plus a vault-key-derived proof.
 
+## Account recovery
+
+Recovery is the only alternative path to the vault key, and it is opt-in.
+
+- A recovery code or the three security answers are run through Argon2id with
+  their own salt, then HKDF, exactly like a master password. The resulting
+  wrapping key encrypts the vault key with XChaCha20-Poly1305, bound to the
+  vault id.
+- Rows in the `recovery` table hold a salt, a verifier, the wrapped vault key
+  and (for questions) the prompts plus a per-answer salt and verifier. The code
+  and the answers themselves are never stored, and neither is the vault key.
+- A successful recovery **rotates** the salt, the password-derived keys and the
+  vault key, re-encrypts every item in one transaction, and replaces the code.
+  The old password, the old code and the old questions all stop working.
+- Enrolling or disabling recovery requires the master password.
+- Security questions are only as strong as the answers. They are optional; the
+  recovery code is the primary path. A wrong answer, a wrong code or a tampered
+  row fails closed.
+
+## Startup, background and tray
+
+- The app registers itself to start at login once, using the operating system's
+  mechanism (Run key / LaunchAgent / `.desktop` entry), with `--hidden`.
+- Starting hidden does not unlock anything: the vault is locked until the master
+  password is entered, and the idle timeout still clears the session.
+- Closing the window hides the app in the tray. The Rust session is dropped by
+  the idle timeout, by **Lock vault** in the tray, or by quitting.
+- No IPC endpoint, socket or port is opened by the tray or autostart code.
+
 Failure is uniform: the unlock screen reports "incorrect username or password"
 without distinguishing which part was wrong. A failed account lookup still runs
 one Argon2id derivation so a missing account does not answer faster.
@@ -67,6 +99,9 @@ one Argon2id derivation so a missing account does not answer faster.
   vault.
 - Vault ids are random UUIDs generated at creation and are used as associated
   data for item encryption, so a ciphertext cannot be moved between accounts.
+- The Android client links the same crates through `acuye-ffi` (JNI). It holds
+  the unlocked vault key in the app process, passes the database path in from
+  Android and returns JSON; no key material crosses into JavaScript.
 - Only one vault is decrypted at a time: creating an account or switching drops
   the previous session first.
 - Master-password rotation, rename and re-encryption operate on the vault of the

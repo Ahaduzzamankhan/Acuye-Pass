@@ -3,13 +3,15 @@ import { Check, Eye, EyeOff, HelpCircle, Plus, ShieldCheck, Unlock as UnlockIcon
 import { useEffect, useState } from "react";
 
 import { useApp } from "@/lib/app-context";
+import type { SessionView } from "@/lib/types";
 import { useBackend } from "@/lib/backend-context";
 import { cn, initials } from "@/lib/utils";
 import { Dialog } from "@/components/dialog";
 import { Button, Field, Input } from "@/components/ui";
 
 export function Unlock() {
-  const { status, accounts, authMode, setAuthMode, unlock, addAccount, showToast } = useApp();
+  const { status, accounts, authMode, setAuthMode, unlock, adoptSession, addAccount, showToast } =
+    useApp();
   const backend = useBackend();
   const adding = authMode === "add";
   const [selectedVault, setSelectedVault] = useState<string | null>(accounts[0]?.vault_id ?? null);
@@ -20,6 +22,16 @@ export function Unlock() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [recoverMode, setRecoverMode] = useState<"code" | "questions">("code");
+  const [recoveryCode, setRecoveryCode] = useState("");
+  const [answers, setAnswers] = useState<string[]>(["", "", ""]);
+  const [questions, setQuestions] = useState<string[]>([]);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [recoverBusy, setRecoverBusy] = useState(false);
+  const [recoverError, setRecoverError] = useState<string | null>(null);
+  const [issuedCode, setIssuedCode] = useState<string | null>(null);
+  const [pendingSession, setPendingSession] = useState<SessionView | null>(null);
 
   useEffect(() => {
     if (!selectedVault && accounts.length > 0) setSelectedVault(accounts[0].vault_id);
@@ -44,6 +56,87 @@ export function Unlock() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadQuestions = async (vaultId: string | null) => {
+    if (!vaultId) {
+      setQuestions([]);
+      return;
+    }
+    try {
+      setQuestions(await backend.recoveryQuestions(vaultId));
+    } catch {
+      setQuestions([]);
+    }
+  };
+
+  const openRecovery = (mode: "code" | "questions") => {
+    setRecoverMode(mode);
+    setRecoverError(null);
+    setIssuedCode(null);
+    setPendingSession(null);
+    setNewPassword("");
+    setConfirmPassword("");
+    setHelpOpen(true);
+    if (mode === "questions") void loadQuestions(selectedVault);
+  };
+
+  const switchRecoveryMode = (mode: "code" | "questions") => {
+    setRecoverMode(mode);
+    setRecoverError(null);
+    if (mode === "questions") void loadQuestions(selectedVault);
+  };
+
+  const submitRecovery = async () => {
+    setRecoverError(null);
+    if (newPassword !== confirmPassword) {
+      setRecoverError("The new master passwords do not match");
+      return;
+    }
+    if (recoverMode === "questions" && !selectedVault) {
+      setRecoverError("Choose the account whose questions you are answering");
+      return;
+    }
+    setRecoverBusy(true);
+    try {
+      const result =
+        recoverMode === "code"
+          ? await backend.recoverWithCode(recoveryCode, newPassword)
+          : await backend.recoverWithAnswers(selectedVault ?? "", answers, newPassword);
+      setIssuedCode(result.recoveryCode);
+      setPendingSession(result.session);
+      setPassword("");
+      setRecoveryCode("");
+      setAnswers(["", "", ""]);
+      setNewPassword("");
+      setConfirmPassword("");
+      showToast({
+        title: "Vault recovered",
+        description: "Save the new recovery code before continuing.",
+        tone: "success",
+      });
+    } catch (cause) {
+      setRecoverError(cause instanceof Error ? cause.message : "Recovery failed");
+    } finally {
+      setRecoverBusy(false);
+    }
+  };
+
+  const copyIssuedCode = async () => {
+    if (!issuedCode) return;
+    try {
+      await navigator.clipboard.writeText(issuedCode);
+      showToast({ title: "Recovery code copied" });
+    } catch {
+      showToast({ title: "Could not copy the code", tone: "error" });
+    }
+  };
+
+  const continueRecovered = async () => {
+    if (pendingSession) await adoptSession(pendingSession);
+    setPendingSession(null);
+    setIssuedCode(null);
+    setHelpOpen(false);
   };
 
   return (
@@ -214,7 +307,7 @@ export function Unlock() {
 
           <button
             type="button"
-            onClick={() => setHelpOpen(true)}
+            onClick={() => openRecovery("code")}
             className="mx-auto mt-3 flex items-center gap-1.5 text-[11.5px] text-muted-foreground transition-colors hover:text-foreground"
           >
             <HelpCircle className="h-3 w-3" />
@@ -229,30 +322,158 @@ export function Unlock() {
 
       <Dialog
         open={helpOpen}
-        onOpenChange={setHelpOpen}
-        title="There is no password reset"
-        description="Your master password derives the only key that can decrypt this vault."
+        onOpenChange={(open) => {
+          setHelpOpen(open);
+          if (!open) {
+            setRecoverError(null);
+            setIssuedCode(null);
+            setPendingSession(null);
+          }
+        }}
+        title={issuedCode ? "Save your new recovery code" : "Account recovery"}
+        description={
+          issuedCode
+            ? "Shown once. Your previous code and any security questions no longer work."
+            : "Recovery only works if you turned it on in Settings → Authentication."
+        }
         size="sm"
-        footer={<Button onClick={() => setHelpOpen(false)}>I understand</Button>}
       >
-        <div className="space-y-3 text-[12.5px] leading-relaxed text-muted-foreground">
-          <p>
-            Acuye Pass stores no plaintext password, no recovery key and no server-side copy of
-            your vault. If the master password is lost, the encrypted data cannot be decrypted —
-            by us or by anyone else.
-          </p>
-          <p>
-            Other accounts in the same database keep working: each vault has its own master
-            password, so losing one does not lock you out of the others.
-          </p>
-          <p>
-            If you have an encrypted backup and remember an older master password, restore the
-            backup from Settings → Data &amp; Storage and unlock with that older password.
-          </p>
-          <p className="text-foreground/80">
-            This is a deliberate security property, not a limitation we can bypass.
-          </p>
-        </div>
+        {issuedCode ? (
+          <div className="space-y-3 text-[12.5px] leading-relaxed">
+            <p className="text-muted-foreground">
+              Your vault is open under the new master password. Keep this code somewhere safe and
+              offline — it is the only copy.
+            </p>
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+              <code className="flex-1 select-all break-all font-mono text-[12.5px] tracking-[0.06em]">
+                {issuedCode}
+              </code>
+              <Button type="button" variant="secondary" size="sm" onClick={() => void copyIssuedCode()}>
+                Copy
+              </Button>
+            </div>
+            <p className="text-[11.5px] text-muted-foreground">
+              Passkeys and the browser extension use the master password, so sign in again there.
+            </p>
+            <Button type="button" className="w-full" onClick={() => void continueRecovered()}>
+              I saved it — open my vault
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/30 p-1">
+              {(["code", "questions"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => switchRecoveryMode(mode)}
+                  aria-pressed={recoverMode === mode}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 text-[11.5px] font-medium transition-colors",
+                    recoverMode === mode
+                      ? "bg-surface text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {mode === "code" ? "Recovery code" : "Security questions"}
+                </button>
+              ))}
+            </div>
+
+            {recoverMode === "code" ? (
+              <>
+                <Field label="Recovery code" htmlFor="recovery-code">
+                  <Input
+                    id="recovery-code"
+                    value={recoveryCode}
+                    onChange={(event) => setRecoveryCode(event.target.value)}
+                    placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="font-mono text-[12px] tracking-[0.06em]"
+                  />
+                </Field>
+                <p className="text-[11px] text-muted-foreground">
+                  Case and dashes do not matter. The code opens one vault; the vault's own password
+                  is replaced below.
+                </p>
+              </>
+            ) : questions.length > 0 ? (
+              <div className="space-y-2.5">
+                {questions.map((question, index) => (
+                  <Field key={question} label={question} htmlFor={`recovery-answer-${index}`}>
+                    <Input
+                      id={`recovery-answer-${index}`}
+                      value={answers[index] ?? ""}
+                      onChange={(event) => {
+                        const next = [...answers];
+                        next[index] = event.target.value;
+                        setAnswers(next);
+                      }}
+                      autoComplete="off"
+                    />
+                  </Field>
+                ))}
+                <p className="text-[11px] text-muted-foreground">
+                  Answers are not case-sensitive. All three must match.
+                </p>
+              </div>
+            ) : (
+              <p className="rounded-md bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground">
+                This account has no security questions. Use its recovery code, or choose another
+                account above.
+              </p>
+            )}
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Field label="New master password" htmlFor="recovery-password">
+                <Input
+                  id="recovery-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </Field>
+              <Field label="Confirm password" htmlFor="recovery-confirm">
+                <Input
+                  id="recovery-confirm"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </Field>
+            </div>
+
+            {recoverError ? (
+              <p className="rounded-md bg-danger/10 px-3 py-2 text-[12px] text-danger" role="alert">
+                {recoverError}
+              </p>
+            ) : null}
+
+            <Button
+              type="button"
+              className="w-full"
+              loading={recoverBusy}
+              disabled={
+                !newPassword ||
+                !confirmPassword ||
+                (recoverMode === "code"
+                  ? recoveryCode.trim().length < 8
+                  : answers.some((answer) => !answer.trim()))
+              }
+              onClick={() => void submitRecovery()}
+            >
+              Recover and set a new password
+            </Button>
+
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              No server holds a copy of your vault, so these are the only two ways back in. A
+              successful recovery rotates the vault key and issues a fresh code.
+            </p>
+          </div>
+        )}
       </Dialog>
     </div>
   );

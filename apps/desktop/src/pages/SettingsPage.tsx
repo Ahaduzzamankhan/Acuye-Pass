@@ -33,7 +33,9 @@ import type {
   DeviceView,
   ParsedImport,
   PasswordStrength,
+  RecoveryStatus,
   ReleaseChannel,
+  SecurityQuestionInput,
   StorageInfo,
   SyncProviderConfig,
   ThemeColor,
@@ -241,6 +243,50 @@ function AppearanceSection() {
   );
 }
 
+function StartupRow() {
+  const backend = useBackend();
+  const { showToast } = useApp();
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void backend
+      .autostartEnabled()
+      .then(setEnabled)
+      .catch(() => setEnabled(false));
+  }, [backend]);
+
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    try {
+      setEnabled(await backend.setAutostart(next));
+    } catch (cause) {
+      showToast({
+        title: "Could not change the startup setting",
+        description: cause instanceof Error ? cause.message : undefined,
+        tone: "error",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Row
+      title="Start at login"
+      description="Launches hidden in the tray with the vault locked. Closing the window keeps the app running there."
+      className="border-t border-border/70"
+    >
+      <Switch
+        id="start-at-login"
+        checked={enabled}
+        disabled={busy}
+        onCheckedChange={(checked) => void toggle(checked)}
+      />
+    </Row>
+  );
+}
+
 function PreferencesSection() {
   const { settings, saveSettings } = useApp();
   return (
@@ -300,6 +346,7 @@ function PreferencesSection() {
             onCheckedChange={(checked) => void saveSettings({ shortcuts_enabled: checked })}
           />
         </Row>
+        <StartupRow />
       </Card>
     </>
   );
@@ -324,6 +371,204 @@ function usePasswordStrength(password: string) {
     };
   }, [password, evaluatePassword]);
   return strength;
+}
+
+function RecoveryCard() {
+  const backend = useBackend();
+  const { status, showToast } = useApp();
+  const vaultId = status?.session?.vaultId ?? null;
+  const [enrolled, setEnrolled] = useState<RecoveryStatus | null>(null);
+  const [password, setPassword] = useState("");
+  const [withQuestions, setWithQuestions] = useState(false);
+  const [questions, setQuestions] = useState<SecurityQuestionInput[]>([
+    { question: "What was the name of your first pet?", answer: "" },
+    { question: "What city were you born in?", answer: "" },
+    { question: "What was your childhood nickname?", answer: "" },
+  ]);
+  const [issued, setIssued] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!vaultId) return;
+    try {
+      setEnrolled(await backend.recoveryStatus(vaultId));
+    } catch {
+      setEnrolled(null);
+    }
+  }, [backend, vaultId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const enable = async () => {
+    if (!vaultId) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await backend.enableRecovery(
+        vaultId,
+        password,
+        withQuestions ? questions : null,
+      );
+      setIssued(result.recoveryCode);
+      setPassword("");
+      setQuestions((current) => current.map((entry) => ({ ...entry, answer: "" })));
+      await refresh();
+      showToast({
+        title: "Recovery enabled",
+        description: "Write down the code now — it is shown once.",
+        tone: "success",
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not enable recovery");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    if (!vaultId) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await backend.disableRecovery(vaultId, password);
+      setPassword("");
+      setIssued(null);
+      await refresh();
+      showToast({ title: "Recovery turned off", tone: "success" });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not turn recovery off");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!issued) return;
+    try {
+      await navigator.clipboard.writeText(issued);
+      showToast({ title: "Recovery code copied" });
+    } catch {
+      showToast({ title: "Could not copy the code", tone: "error" });
+    }
+  };
+
+  const answered = questions.every((entry) => entry.answer.trim().length >= 2);
+  const canEnable = Boolean(vaultId && password && (!withQuestions || answered));
+
+  return (
+    <Card className="mt-4">
+      <div className="flex items-start justify-between px-4 pt-3.5">
+        <div>
+          <p className="text-[13px] font-medium">Account recovery</p>
+          <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
+            A one-time code, plus optional security questions, wraps this vault's key. Only the
+            master password or these can open it.
+          </p>
+        </div>
+        {enrolled?.code ? <Badge tone="success">Code on</Badge> : <Badge tone="muted">Off</Badge>}
+      </div>
+
+      <div className="space-y-3 px-4 py-4">
+        <Field label="Master password" htmlFor="recovery-master-password">
+          <Input
+            id="recovery-master-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+            placeholder="Required to change recovery settings"
+          />
+        </Field>
+
+        <Row
+          title="Add three security questions"
+          description="Answers are case-insensitive and stored only as Argon2id verifiers."
+        >
+          <Switch checked={withQuestions} onCheckedChange={setWithQuestions} />
+        </Row>
+
+        {withQuestions ? (
+          <div className="space-y-2.5">
+            {questions.map((entry, index) => (
+              <div key={index} className="grid gap-2 sm:grid-cols-2">
+                <Field label={`Question ${index + 1}`} htmlFor={`recovery-question-${index}`}>
+                  <Input
+                    id={`recovery-question-${index}`}
+                    value={entry.question}
+                    maxLength={160}
+                    onChange={(event) => {
+                      const next = [...questions];
+                      next[index] = { ...next[index], question: event.target.value };
+                      setQuestions(next);
+                    }}
+                  />
+                </Field>
+                <Field label="Answer" htmlFor={`recovery-answer-${index}`}>
+                  <Input
+                    id={`recovery-answer-${index}`}
+                    value={entry.answer}
+                    onChange={(event) => {
+                      const next = [...questions];
+                      next[index] = { ...next[index], answer: event.target.value };
+                      setQuestions(next);
+                    }}
+                    autoComplete="off"
+                  />
+                </Field>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {issued ? (
+          <div className="space-y-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+            <p className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
+              Your recovery code · shown once
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 select-all break-all font-mono text-[12.5px] tracking-[0.06em]">
+                {issued}
+              </code>
+              <Button variant="secondary" size="sm" onClick={() => void copy()}>
+                Copy
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {error ? <p className="text-[12px] text-danger">{error}</p> : null}
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Enabling replaces any existing code. Turning recovery off deletes every enrolment.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void disable()}
+              disabled={!password || busy || !enrolled?.code}
+            >
+              Turn off
+            </Button>
+            <Button size="sm" onClick={() => void enable()} loading={busy} disabled={!canEnable}>
+              {enrolled?.code ? "New recovery code" : "Enable recovery"}
+            </Button>
+          </div>
+        </div>
+
+        {enrolled?.questions ? (
+          <p className="text-[11px] text-muted-foreground">
+            Three security questions are enrolled. A successful recovery clears them; set them again
+            afterwards.
+          </p>
+        ) : null}
+      </div>
+    </Card>
+  );
 }
 
 function ChangePasswordForm() {
@@ -490,7 +735,8 @@ function VaultSecuritySection() {
         <div className="px-4 pt-3.5">
           <p className="text-[13px] font-medium">Change master password</p>
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-            You need the current password. There is no recovery path if it is lost.
+            You need the current password. Recovery codes and security questions are enrolled under
+            Authentication.
           </p>
         </div>
         <ChangePasswordForm />
@@ -527,8 +773,8 @@ function AuthenticationSection() {
         <Row title="Biometric unlock" description="Not implemented and not planned for this build." className="border-t border-border/70">
           <Badge tone="muted">Unavailable</Badge>
         </Row>
-        <Row title="Password recovery" description="No reset, no recovery key, no server copy." className="border-t border-border/70">
-          <Badge tone="warning">Impossible by design</Badge>
+        <Row title="Account recovery" description="Optional one-time code and three security questions, enrolled from this device." className="border-t border-border/70">
+          <Badge tone="muted">Local only</Badge>
         </Row>
         <Row title="Sign out" description="Drops the in-memory vault key and returns to the unlock screen." className="border-t border-border/70">
           <Button variant="outline" size="sm" onClick={() => void logout()}>
@@ -543,6 +789,7 @@ function AuthenticationSection() {
         </div>
         <ChangePasswordForm />
       </Card>
+      <RecoveryCard />
     </>
   );
 }
