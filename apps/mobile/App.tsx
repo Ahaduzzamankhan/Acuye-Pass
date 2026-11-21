@@ -552,8 +552,9 @@ export default function App() {
         <SafeAreaView style={[styles.flex, styles.center, styles.padded]}>
           <Text style={styles.title}>Acuye Pass</Text>
           <Text style={styles.subtitle}>
-            This build has no native vault library. Install an APK built by the Android CI workflow
-            (.github/workflows/android.yml) to use the app.
+            This build has no native vault library, so it cannot open a vault. Install an APK built by
+            the Android workflows (.github/workflows/android.yml) or by a tagged release build
+            (.github/workflows/android-release.yml).
           </Text>
         </SafeAreaView>
       </>

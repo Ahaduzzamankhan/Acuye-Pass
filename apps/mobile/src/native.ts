@@ -1,9 +1,9 @@
 /**
  * Typed wrapper around the Rust core.
  *
- * `NativeModules.AcuyeNative` is implemented in `crates/acuye-ffi` (JNI) and
- * returns JSON strings; `NativeModules.Acuye` only supplies the private app
- * directory where `acuye.db` lives. Nothing here decrypts anything in JS.
+ * `NativeModules.Acuye` is implemented by `AcuyeModule.kt`, which forwards each
+ * call to the JNI functions in `crates/acuye-ffi` and resolves with the JSON
+ * string the Rust core produced. Nothing here decrypts anything in JS.
  */
 
 import { NativeModules } from "react-native";
@@ -66,14 +66,14 @@ export interface TotpCode {
 }
 
 interface JniBridge {
-  status(dbPath: string): string;
-  createAccount(dbPath: string, username: string, password: string): string;
-  unlock(dbPath: string, vaultId: string, username: string, password: string): string;
-  lock(): string;
-  list(dbPath: string, query: string): string;
-  item(dbPath: string, id: string): string;
-  secret(dbPath: string, id: string, field: string): string;
-  totp(dbPath: string, id: string): string;
+  status(dbPath: string): Promise<string>;
+  createAccount(dbPath: string, username: string, password: string): Promise<string>;
+  unlock(dbPath: string, vaultId: string, username: string, password: string): Promise<string>;
+  lock(): Promise<string>;
+  list(dbPath: string, query: string): Promise<string>;
+  item(dbPath: string, id: string): Promise<string>;
+  secret(dbPath: string, id: string, field: string): Promise<string>;
+  totp(dbPath: string, id: string): Promise<string>;
   createLogin(
     dbPath: string,
     title: string,
@@ -82,18 +82,22 @@ interface JniBridge {
     url: string,
     notes: string,
   ): string;
-  generate(optionsJson: string): string;
+  generate(optionsJson: string): Promise<string>;
 }
 
 interface DirectoryModule {
   dataDir(): Promise<string>;
 }
 
-const bridge = NativeModules.AcuyeNative as JniBridge | undefined;
-const directory = NativeModules.Acuye as DirectoryModule | undefined;
+const nativeModule = NativeModules.Acuye as (JniBridge & DirectoryModule) | undefined;
+const bridge = nativeModule;
 
-/** False in the browser preview and in any build without the Rust library. */
-export const nativeAvailable = Boolean(bridge && directory);
+/** False in a JS-only preview and in any build without the Rust library. */
+export const nativeAvailable = Boolean(
+  nativeModule &&
+    typeof nativeModule.status === "function" &&
+    typeof nativeModule.dataDir === "function",
+);
 
 let dbPath: string | null = null;
 
@@ -106,10 +110,10 @@ function jni(): JniBridge {
 
 async function path(): Promise<string> {
   if (dbPath) return dbPath;
-  if (!directory) {
+  if (!nativeModule) {
     throw new Error("The app data directory is unavailable.");
   }
-  dbPath = `${await directory.dataDir()}/acuye.db`;
+  dbPath = `${await nativeModule.dataDir()}/acuye.db`;
   return dbPath;
 }
 
@@ -128,35 +132,37 @@ function parse<T>(raw: string): T {
 
 export const vault = {
   async status(): Promise<StatusResult> {
-    return parse<StatusResult>(jni().status(await path()));
+    return parse<StatusResult>(await jni().status(await path()));
   },
 
   async createAccount(username: string, password: string): Promise<StatusResult> {
-    return parse<StatusResult>(jni().createAccount(await path(), username, password));
+    return parse<StatusResult>(await jni().createAccount(await path(), username, password));
   },
 
   async unlock(vaultId: string | null, username: string, password: string): Promise<StatusResult> {
-    return parse<StatusResult>(jni().unlock(await path(), vaultId ?? "", username, password));
+    return parse<StatusResult>(
+      await jni().unlock(await path(), vaultId ?? "", username, password),
+    );
   },
 
   async lock(): Promise<void> {
-    parse<{ ok: true }>(jni().lock());
+    parse<{ ok: true }>(await jni().lock());
   },
 
   async list(query = ""): Promise<ItemSummary[]> {
-    return parse<{ items: ItemSummary[] }>(jni().list(await path(), query)).items;
+    return parse<{ items: ItemSummary[] }>(await jni().list(await path(), query)).items;
   },
 
   async item(id: string): Promise<VaultItem> {
-    return parse<{ item: VaultItem }>(jni().item(await path(), id)).item;
+    return parse<{ item: VaultItem }>(await jni().item(await path(), id)).item;
   },
 
   async secret(id: string, field: string): Promise<string> {
-    return parse<{ value: string }>(jni().secret(await path(), id, field)).value;
+    return parse<{ value: string }>(await jni().secret(await path(), id, field)).value;
   },
 
   async totp(id: string): Promise<TotpCode> {
-    return parse<TotpCode>(jni().totp(await path(), id));
+    return parse<TotpCode>(await jni().totp(await path(), id));
   },
 
   async createLogin(input: {
@@ -167,7 +173,7 @@ export const vault = {
     notes: string;
   }): Promise<VaultItem> {
     return parse<{ item: VaultItem }>(
-      jni().createLogin(
+      await jni().createLogin(
         await path(),
         input.title,
         input.username,
@@ -179,6 +185,6 @@ export const vault = {
   },
 
   async generatePassword(length = 24): Promise<string> {
-    return parse<{ password: string }>(jni().generate(JSON.stringify({ length }))).password;
+    return parse<{ password: string }>(await jni().generate(JSON.stringify({ length }))).password;
   },
 };

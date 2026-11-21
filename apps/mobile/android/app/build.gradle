@@ -8,6 +8,10 @@ react {
 
 def enableProguardInReleaseBuilds = false
 
+// Tagged release builds pass -PacuyeVersionName/-PacuyeVersionCode.
+def acuyeVersionName = (findProperty("acuyeVersionName") ?: "0.1.4").toString()
+def acuyeVersionCode = (findProperty("acuyeVersionCode") ?: "1").toString().toInteger()
+
 android {
     namespace "com.fluxenite.acuyepass.mobile"
     ndkVersion rootProject.ext.ndkVersion
@@ -18,8 +22,8 @@ android {
         applicationId "com.fluxenite.acuyepass.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.4"
+        versionCode acuyeVersionCode
+        versionName acuyeVersionName
         // The Rust core is shipped as two ABIs, matching the desktop release
         // targets: 32-bit ARM (Android 7 devices) and ARM64.
         ndk {

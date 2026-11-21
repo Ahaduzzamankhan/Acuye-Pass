@@ -1,0 +1,160 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name for the APK (defaults to apps/mobile/package.json)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Signed release APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # v4 installs only the command-line tools, so the step below owns the
+      # package list and nothing depends on Google's removed `tools` package.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install JavaScript dependencies
+        working-directory: apps/mobile
+        run: npm install --no-audit --no-fund
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build the shared Rust core for both ABIs
+        run: |
+          cargo ndk \
+            --platform 24 \
+            -t arm64-v8a -t armeabi-v7a \
+            -o apps/mobile/android/app/src/main/jniLibs \
+            build -p acuye-ffi --release
+
+      - name: Resolve the release version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./apps/mobile/package.json').version")"
+          fi
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "Building Acuye Pass $VERSION (versionCode ${{ github.run_number }})"
+
+      - name: Prepare the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ACUYE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ACUYE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ACUYE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ACUYE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/acuye-release.keystore"
+            store_password="$KEYSTORE_PASSWORD"
+            key_alias="$KEY_ALIAS"
+            key_password="$KEY_PASSWORD"
+            echo "Signing with the ACUYE release key."
+          else
+            echo "::warning::ACUYE_KEYSTORE_BASE64 is not configured, so this APK is signed with a throwaway key. It installs, but it is not a store identity."
+            keytool -genkeypair \
+              -keystore "$RUNNER_TEMP/acuye-release.keystore" \
+              -storepass android -keypass android \
+              -alias acuye -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Acuye CI, O=Fluxenite, C=US"
+            store_password=android
+            key_alias=acuye
+            key_password=android
+          fi
+          {
+            echo "ACUYE_KEYSTORE_PATH=$RUNNER_TEMP/acuye-release.keystore"
+            echo "ACUYE_KEYSTORE_PASSWORD=$store_password"
+            echo "ACUYE_KEY_ALIAS=$key_alias"
+            echo "ACUYE_KEY_PASSWORD=$key_password"
+          } >> "$GITHUB_ENV"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build the signed release APK
+        working-directory: apps/mobile/android
+        run: |
+          gradle assembleRelease --no-daemon --stacktrace \
+            -PacuyeVersionName="${{ steps.version.outputs.name }}" \
+            -PacuyeVersionCode="${{ steps.version.outputs.code }}"
+
+      - name: Inspect the APK
+        run: |
+          APK=apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+          ls -l "$APK"
+          unzip -l "$APK" | grep -E "libacuye_ffi.so" || (echo "missing the Rust library" && exit 1)
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" |
+            grep -E "^(package|sdkVersion|targetSdkVersion|application-icon-640|application-label)"
+
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk \
+            "dist/acuye-pass-${{ steps.version.outputs.name }}.apk"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acuye-pass-android-release
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publish the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.apk \
+              --title "Acuye Pass ${{ steps.version.outputs.name }}" \
+              --generate-notes
+          fi
