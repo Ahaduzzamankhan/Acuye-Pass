@@ -837,7 +837,7 @@ fn normalize_answer(answer: &str) -> Result<String> {
         .join(" ")
         .to_lowercase();
     let len = normalized.chars().count();
-    if len < MIN_SECURITY_ANSWER_LEN || len > MAX_SECURITY_ANSWER_LEN {
+    if !(MIN_SECURITY_ANSWER_LEN..=MAX_SECURITY_ANSWER_LEN).contains(&len) {
         return Err(AcuyeError::Validation(format!(
             "Each answer needs {MIN_SECURITY_ANSWER_LEN}-{MAX_SECURITY_ANSWER_LEN} characters"
         )));

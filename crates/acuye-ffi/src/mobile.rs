@@ -441,9 +441,7 @@ impl MobileVault {
                 let password = str_arg(args, "password");
                 let unlocked = match opt_str(args, "vaultId") {
                     Some(id) => self.service.unlock_vault(&id, &password)?,
-                    None => self
-                        .service
-                        .unlock(&str_arg(args, "username"), &password)?,
+                    None => self.service.unlock(&str_arg(args, "username"), &password)?,
                 };
                 self.set_session(unlocked);
                 self.touch_device()?;
@@ -563,8 +561,9 @@ impl MobileVault {
                 Ok(json!({ "item": item }))
             }
             "items.update" => {
-                let item: Item = serde_json::from_value(args.get("item").cloned().unwrap_or(json!({})))
-                    .map_err(|_| invalid("That item is not valid"))?;
+                let item: Item =
+                    serde_json::from_value(args.get("item").cloned().unwrap_or(json!({})))
+                        .map_err(|_| invalid("That item is not valid"))?;
                 Ok(json!({ "item": self.update_item(item)? }))
             }
             "items.delete" => {
@@ -723,9 +722,11 @@ impl MobileVault {
                         .ok_or_else(|| invalid("That field does not exist"))?;
                     (field.value.clone(), field.concealed)
                 };
-                self.service
-                    .db_mut()
-                    .record_secret_access(&id, "revealed", acuye_core::time::now())?;
+                self.service.db_mut().record_secret_access(
+                    &id,
+                    "revealed",
+                    acuye_core::time::now(),
+                )?;
                 Ok(json!({ "value": value, "concealed": concealed }))
             }
             "secrets.accessLog" => {
@@ -816,7 +817,11 @@ impl MobileVault {
             }
             "backups.restore" => {
                 let name = str_arg(args, "name");
-                if name.contains('/') || name.contains('\\') || name.contains("..") || !name.ends_with(".db") {
+                if name.contains('/')
+                    || name.contains('\\')
+                    || name.contains("..")
+                    || !name.ends_with(".db")
+                {
                     return Err(invalid("Invalid backup name"));
                 }
                 let path = self.paths().backups.join(&name);
@@ -833,11 +838,8 @@ impl MobileVault {
                 let password = str_arg(args, "password");
                 acuye_export::validate_export_password(&password)?;
                 let items = self.unlocked_ref()?.vault.items.clone();
-                let payload = acuye_export::encrypt_export(
-                    &items,
-                    &password,
-                    KdfParams::default(),
-                )?;
+                let payload =
+                    acuye_export::encrypt_export(&items, &password, KdfParams::default())?;
                 let path = self
                     .paths()
                     .exports
@@ -939,10 +941,8 @@ impl MobileVault {
                 Ok(json!({ "setup": setup }))
             }
             "recovery.disable" => {
-                self.service.disable_recovery(
-                    &str_arg(args, "vaultId"),
-                    &str_arg(args, "password"),
-                )?;
+                self.service
+                    .disable_recovery(&str_arg(args, "vaultId"), &str_arg(args, "password"))?;
                 Ok(json!({ "disabled": true }))
             }
             "recovery.withCode" => {
@@ -1181,7 +1181,9 @@ fn entry_value(item: &Item, at: u64) -> Value {
     match totp_config(item) {
         Ok(config) => {
             let code = if config.is_counter_based() {
-                config.code_for_counter(config.counter).map_err(|error| error.to_string())
+                config
+                    .code_for_counter(config.counter)
+                    .map_err(|error| error.to_string())
             } else {
                 config.code_at(at).map_err(|error| error.to_string())
             };
@@ -1308,7 +1310,11 @@ fn normalize_host(host: &str) -> String {
 
 /// Logins whose URL host equals `host`, for the future mobile autofill service.
 pub fn matches_host_json(vault: &MobileVault, host: &str) -> String {
-    let Ok(unlocked) = vault.unlocked.as_ref().ok_or(AcuyeError::AuthenticationFailed) else {
+    let Ok(unlocked) = vault
+        .unlocked
+        .as_ref()
+        .ok_or(AcuyeError::AuthenticationFailed)
+    else {
         return error_json(&AcuyeError::AuthenticationFailed);
     };
     let wanted = normalize_host(host);
@@ -1441,7 +1447,7 @@ mod tests {
         );
         assert_eq!(secret["value"], "server-password-123");
 
-        assert_eq!(vault.lock_json().contains("\"ok\":true"), true);
+        assert!(vault.lock_json().contains("\"ok\":true"));
         let locked: Value = call(&mut vault, "items.list", json!({}));
         assert_eq!(locked["ok"], false);
 
@@ -1527,7 +1533,11 @@ mod tests {
 
         let mut settings: Value = call(&mut vault, "settings.get", json!({}));
         settings["settings"]["auto_lock_secs"] = json!(120);
-        let saved: Value = call(&mut vault, "settings.save", json!({ "settings": settings["settings"] }));
+        let saved: Value = call(
+            &mut vault,
+            "settings.save",
+            json!({ "settings": settings["settings"] }),
+        );
         assert_eq!(saved["settings"]["auto_lock_secs"], 120);
 
         let exported: Value = call(
@@ -1582,8 +1592,7 @@ mod tests {
     fn generator_is_shared_with_desktop() {
         let path = temp_db();
         let vault = MobileVault::open(path.to_str().unwrap()).unwrap();
-        let value: Value =
-            serde_json::from_str(&vault.generate_json(r#"{"length":20}"#)).unwrap();
+        let value: Value = serde_json::from_str(&vault.generate_json(r#"{"length":20}"#)).unwrap();
         assert_eq!(value["ok"], true);
         assert_eq!(value["password"].as_str().unwrap().len(), 20);
         std::fs::remove_file(path).ok();
