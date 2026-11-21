@@ -1,9 +1,9 @@
 {
   "name": "acuye-pass",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.6",
   "license": "MIT",
-  "description": "Acuye Pass — a privacy-focused, local-first password manager by Fluxenite",
+  "description": "Acuye Pass \u2014 a privacy-focused, local-first password manager by Fluxenite",
   "repository": {
     "type": "git",
     "url": "https://github.com/Ahaduzzamankhan/Acuye-Pass.git"

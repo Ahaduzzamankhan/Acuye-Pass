@@ -67,6 +67,21 @@ fn with_vault(
     }
 }
 
+/// Single entry point for every command the React Native app sends.
+/// `op` names the desktop command, `args_json` is a JSON object.
+#[no_mangle]
+pub extern "system" fn Java_com_fluxenite_acuyepass_mobile_AcuyeNative_call(
+    mut env: JNIEnv,
+    _class: JClass,
+    db_path: JString,
+    op: JString,
+    args_json: JString,
+) -> jstring {
+    let operation = read(&mut env, &op);
+    let args = read(&mut env, &args_json);
+    with_vault(&mut env, db_path, |vault| vault.call(&operation, &args))
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_fluxenite_acuyepass_mobile_AcuyeNative_status(
     mut env: JNIEnv,

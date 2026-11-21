@@ -9,7 +9,7 @@ react {
 def enableProguardInReleaseBuilds = false
 
 // Tagged release builds pass -PacuyeVersionName/-PacuyeVersionCode.
-def acuyeVersionName = (findProperty("acuyeVersionName") ?: "0.1.4").toString()
+def acuyeVersionName = (findProperty("acuyeVersionName") ?: "0.1.6").toString()
 def acuyeVersionCode = (findProperty("acuyeVersionCode") ?: "1").toString().toInteger()
 
 android {

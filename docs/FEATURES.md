@@ -1,6 +1,6 @@
 # Features
 
-A complete reference of what Acuye Pass 0.1.4 does. Anything not listed here is
+A complete reference of what Acuye Pass 0.1.6 does. Anything not listed here is
 either not implemented or explicitly noted as a limitation. For how these
 features compare with other products, see [../benchmark.md](../benchmark.md).
 
@@ -224,6 +224,28 @@ discovery service and no server.
 - No telemetry, analytics or crash reporting exists in the build; the settings
   model rejects those keys.
 
+## Android app
+
+`apps/mobile` is a React Native client over the same crates, through a JSON
+command router in `crates/acuye-ffi`. It ships the desktop feature set:
+
+- All eight item types with create, edit, duplicate, delete, favourite, tags,
+  notes and custom fields.
+- Search, category filters and a favourites filter.
+- Authenticator entries with live TOTP/HOTP codes, counter advance, setup-URI
+  export and duplicate detection.
+- Secret items with per-field reveal, access history, expiry and rotation
+  reminders.
+- The local security report and password/passphrase generators.
+- Recovery enrol/recover, devices, backups, encrypted and CSV export, and
+  import from Acuye, Bitwarden, Chrome, 1Password and generic CSV.
+- Light/dark/system appearance with the six accent colours, auto-lock enforced
+  in Rust, and clipboard auto-clear.
+
+Platform-specific gaps on Android: no autofill service, no biometric unlock, no
+cloud sync, no LAN pairing, no in-app updater and no online breach lookup (the
+local scan is used instead, so the mobile app makes no network requests).
+
 ## Not implemented
 
 - Save prompts, keyboard shortcut/context-menu fill, card/note filling from the
@@ -232,7 +254,7 @@ discovery service and no server.
 - Cloud sync provider (the `acuye-sync/1` protocol ships as a spec plus a
   transport trait only).
 - Multiple users, sharing, collections, emergency access, secure send links.
-- Android app features beyond unlock/search/reveal/copy/TOTP/create-login:
-  editing, deleting, import/export, sync, recovery settings, autofill service.
+- Android autofill service, cloud sync, in-app updates and LAN pairing on the
+  phone. Everything else in this document is available on both platforms.
 - A Play Store listing or signed store-ready Android build.
 - macOS/Linux release artifacts, CLI, SSH agent.

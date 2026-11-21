@@ -14,8 +14,10 @@ on:
 permissions:
   contents: write
 
+# Shares a queue with the Windows release so both workflows can publish to the
+# same GitHub release without racing to create it.
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

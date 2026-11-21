@@ -1,7 +1,7 @@
 {
   "name": "@acuye/mobile",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Acuye Pass for Android \u2014 React Native UI over the shared Rust core",
   "scripts": {
     "start": "react-native start",

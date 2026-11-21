@@ -317,9 +317,12 @@ docs/                   Architecture, security, privacy, development, features,
   store). It fills one matching login form and never saves, prompts or creates
   passkeys; automatic filling needs the vault to be unlocked first.
 - No cloud sync, sharing or emergency access.
-- The Android client is built by CI as an installable APK (not a store listing)
-  and is read-mostly: unlock, search, reveal/copy, TOTP and create logins. No
-  editing, deletion, import/export, sync or Android autofill service.
+- The Android client is built by CI as an installable APK (not a store listing).
+  It covers the same feature set as the desktop app — all eight item types,
+  editing/duplicating/deleting, authenticator entries, secrets with access
+  history, the security report, generator, recovery, devices, backups,
+  encrypted/CSV export and import — but has no Android autofill service, no
+  cloud sync, no in-app updater and no LAN pairing.
 - Security questions are weaker than the master password. They are optional and
   only protect as well as the answers you choose.
 - `acuye-sync/1` is a specification plus a transport trait; no provider ships.

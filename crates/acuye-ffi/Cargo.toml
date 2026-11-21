@@ -13,6 +13,8 @@ acuye-storage = { workspace = true }
 acuye-auth = { workspace = true }
 acuye-generator = { workspace = true }
 acuye-totp = { workspace = true }
+acuye-import = { workspace = true }
+acuye-export = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

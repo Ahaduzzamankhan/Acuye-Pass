@@ -1,6 +1,6 @@
 # Benchmark: Acuye Pass vs. Bitwarden vs. 1Password
 
-A factual, feature-by-feature comparison of this repository (Acuye Pass 0.1.4,
+A factual, feature-by-feature comparison of this repository (Acuye Pass 0.1.6,
 pre-1.0) against the two most commonly recommended password managers.
 
 Scope: what each product actually does today, not marketing. Acuye Pass claims
@@ -131,7 +131,7 @@ Notes that matter:
 | Per-item sharing with another person | **No** | Yes, free | Yes |
 | Self-hosting | N/A — no server | Yes (Enterprise, Docker) | No |
 | CLI | No | Yes | Yes |
-| Mobile apps | **No** (empty scaffold) | Yes | Yes |
+| Mobile apps | **Yes** (Android APK, CI-built) | Yes | Yes |
 | Linux / macOS desktop | Tauri code is cross-platform-capable; **Windows is the shipped, supported target** | Yes | Yes |
 | Travel Mode / deniable vaults | No | No | Yes |
 | Themes / UI polish | Six accent themes, light/dark/system, reduced-motion, custom title bar, command palette | Polished, conventional | Most polished of the three |
@@ -228,7 +228,7 @@ manager most people could switch to".
 
 - Acuye Pass: `README.md`, `docs/SECURITY.md`, `docs/ARCHITECTURE.md`,
   `docs/PRIVACY.md`, `docs/SYNC_PROTOCOL.md`, `crates/*`, `apps/desktop/*` in
-  this repository (v0.1.4).
+  this repository (v0.1.6).
 - Bitwarden: <https://bitwarden.com/pricing>, <https://bitwarden.com/tools-and-features/>,
   <https://bitwarden.com/open-source>, <https://bitwarden.com/help/self-host-bitwarden/>,
   <https://bitwarden.com/blog/bitwarden-2026-product-roundup/>.

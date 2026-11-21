@@ -1,5 +1,7 @@
 package com.fluxenite.acuyepass.mobile
 
+import android.content.Intent
+import android.net.Uri
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -34,6 +36,27 @@ class AcuyeModule(private val context: ReactApplicationContext) :
     @ReactMethod
     fun dataDir(promise: Promise) {
         promise.resolve(context.filesDir.absolutePath)
+    }
+
+    /**
+     * Every vault command goes through the Rust router, so the app and the
+     * desktop share one implementation of items, recovery, import and export.
+     */
+    @ReactMethod
+    fun call(dbPath: String, op: String, argsJson: String, promise: Promise) =
+        answer(promise) { AcuyeNative.call(dbPath, op, argsJson) }
+
+    /** Open a login's website in the system browser. */
+    @ReactMethod
+    fun openUrl(url: String, promise: Promise) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            promise.resolve(true)
+        } catch (error: Throwable) {
+            promise.reject("acuye_intent", error.message ?: "Could not open the link", error)
+        }
     }
 
     @ReactMethod

@@ -5,23 +5,44 @@ no second implementation of the security model: `apps/mobile/android` loads
 `libacuye_ffi.so`, which opens the vault, derives keys (Argon2id), unwraps the
 vault key and decrypts items. JavaScript only receives JSON for display.
 
+Every desktop feature is reachable through one JSON command router
+(`crates/acuye-ffi/src/mobile.rs`), so the two apps share item CRUD, imports,
+exports, recovery, TOTP and the security scan.
+
 ## What works
 
-- First-run account creation, unlock with a master password, lock.
-- Multiple local accounts in one database (account picker).
-- Search across titles, usernames and sites.
-- Item detail: username, password, website, card number, secret, notes — each
-  reveal/copy is explicit.
-- Live TOTP codes for logins with an `otpauth` secret and for authenticator items.
-- Create a login, with the desktop password generator.
+- First-run account creation, unlock with a master password, lock, auto-lock
+  (enforced in Rust and mirrored by the UI), multiple local accounts.
+- All eight item types — login, secure note, card, identity, document, custom,
+  authenticator and secret — with create, edit, delete, duplicate, favourite,
+  tags and notes.
+- Search across titles, usernames, sites, tags and notes, plus category filters.
+- Live TOTP/HOTP codes for authenticator items and for logins with an
+  `otpauth` secret, counter advance, setup-URI export and duplicate detection.
+- Secret manager entries with reveal/copy, per-field concealment, access
+  history, expiry and rotation reminders.
+- Local security report: weak, reused, old and empty passwords with a 0-100
+  hygiene score. No password leaves the phone.
+- Password and passphrase generators with the desktop options and a strength
+  meter.
+- Recovery: enrol a one-time code and three security questions, get back in
+  with either, and receive a rotated code afterwards.
+- Devices list with revocation, database backups (create/list/restore),
+  encrypted JSON export, plaintext CSV export behind an explicit warning, and
+  import from Acuye, Bitwarden (JSON/CSV), Chrome, 1Password and generic CSV.
+- Appearance: light/dark/system, the six desktop accent colours, compact
+  density and reduced motion.
+- Clipboard auto-clear for every copied secret.
 - `minSdk 24` (Android 7), `targetSdk 36`, ABIs `armeabi-v7a` and `arm64-v8a`.
 
-## Not implemented yet
+## Not implemented on Android
 
-- Editing or deleting items, folders/tags management, import/export.
-- Sync, breach checks, recovery settings, biometric unlock.
-- Android autofill service (the host matching function exists in Rust but no
-  `AutofillService` is registered).
+- Autofill service (the Rust host-matching helper exists, no `AutofillService`
+  is registered), biometric unlock, cloud sync, LAN pairing and the in-app
+  updater. Those remain desktop-only or future work.
+- Online breach lookup: the mobile build ships the local scan only, so it makes
+  no network requests at all.
+- A Play Store listing; the APK is a CI artifact.
 
 ## Build
 

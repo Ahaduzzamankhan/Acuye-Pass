@@ -9,6 +9,8 @@ object AcuyeNative {
         System.loadLibrary("acuye_ffi")
     }
 
+    /** One command from the JSON router in `crates/acuye-ffi/src/mobile.rs`. */
+    external fun call(dbPath: String, op: String, argsJson: String): String
     external fun status(dbPath: String): String
     external fun createAccount(dbPath: String, username: String, password: String): String
     external fun unlock(dbPath: String, vaultId: String, username: String, password: String): String
