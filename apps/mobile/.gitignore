@@ -1,4 +1,9 @@
 node_modules/
-android/
-ios/
 *.log
+
+# Gradle and cargo-ndk output. The APK build regenerates both.
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
