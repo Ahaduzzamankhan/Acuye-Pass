@@ -21,7 +21,7 @@ pub fn apply_autostart(app: &AppHandle, hidden: bool) {
     let manager = app.autolaunch();
     let configured = {
         let state = app.state::<AppState>();
-        match state.core.lock() {
+        let configured = match state.core.lock() {
             Ok(core) => core
                 .auth
                 .db()
@@ -30,7 +30,8 @@ pub fn apply_autostart(app: &AppHandle, hidden: bool) {
                 .flatten()
                 .is_some(),
             Err(_) => true,
-        }
+        };
+        configured
     };
     if !configured {
         // Default on, once. A failure here (unsupported platform, policy) must
@@ -39,7 +40,7 @@ pub fn apply_autostart(app: &AppHandle, hidden: bool) {
         let state = app.state::<AppState>();
         if let Ok(core) = state.core.lock() {
             let _ = core.auth.db().set_setting(CONFIGURED_KEY, "1");
-        }
+        };
     }
     if hidden {
         if let Some(window) = app.get_webview_window("main") {
