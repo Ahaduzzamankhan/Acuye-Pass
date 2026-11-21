@@ -20,6 +20,9 @@ export type DownloadAsset = {
   signatureUrl: string | null;
 };
 
+/** Where the release data came from. The page says which one it used. */
+export type ReleaseSource = "api" | "feed" | "none";
+
 export type ReleaseInfo = {
   version: string;
   tag: string;
@@ -29,7 +32,7 @@ export type ReleaseInfo = {
   prerelease: boolean;
   notes: string;
   htmlUrl: string;
-  live: boolean;
+  source: ReleaseSource;
   windowsExe: DownloadAsset | null;
   windowsMsi: DownloadAsset | null;
   androidApk: DownloadAsset | null;
@@ -113,7 +116,7 @@ function pickAndroidApk(assets: GithubAsset[]): DownloadAsset | null {
  * Turn a raw GitHub release into the shape the page renders. Kept separate from
  * the fetch so the shape can be unit-checked without a network call.
  */
-export function toReleaseInfo(release: GithubRelease, live: boolean): ReleaseInfo {
+export function toReleaseInfo(release: GithubRelease, source: ReleaseSource): ReleaseInfo {
   const assets = release.assets ?? [];
   const tag = release.tag_name;
   return {
@@ -125,7 +128,7 @@ export function toReleaseInfo(release: GithubRelease, live: boolean): ReleaseInf
     prerelease: Boolean(release.prerelease),
     notes: (release.body ?? "").trim(),
     htmlUrl: release.html_url,
-    live,
+    source,
     windowsExe: pickWindowsExe(assets),
     windowsMsi: pickWindowsMsi(assets),
     androidApk: pickAndroidApk(assets),
@@ -142,7 +145,7 @@ function fallbackRelease(): ReleaseInfo {
     prerelease: false,
     notes: "",
     htmlUrl: RELEASE_PAGE,
-    live: false,
+    source: "none",
     windowsExe: {
       label: "Installer (.exe)",
       name: "Open the latest release",
@@ -163,6 +166,94 @@ function fallbackRelease(): ReleaseInfo {
   };
 }
 
+function decodeEntities(text: string): string {
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/[^>]+>/g, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sizeToBytes(value: string, unit: string): number {
+  const factor = unit === "GB" ? 1024 ** 3 : unit === "MB" ? 1024 ** 2 : unit === "KB" ? 1024 : 1;
+  return Math.round(Number.parseFloat(value) * factor);
+}
+
+/**
+ * Assets from the release page's `expanded_assets` fragment. This is the same
+ * data the API returns, minus the rate limit: unauthenticated API calls are
+ * capped at 60 per hour, which a public download page can exhaust on its own.
+ */
+function parseAssetRows(html: string, tag: string): GithubAsset[] {
+  const prefix = `/${REPO_SLUG}/releases/download/${tag}/`;
+  const matches = [...html.matchAll(/href="([^"]*\/releases\/download\/[^"]+)"/g)];
+  const assets: GithubAsset[] = [];
+  const seen = new Set<string>();
+
+  matches.forEach((match, index) => {
+    const href = match[1];
+    if (!href.startsWith(prefix) || href.includes("..") || href.includes('"')) return;
+    const name = decodeURIComponent(href.slice(prefix.length));
+    if (!name || name.includes("/") || seen.has(name)) return;
+    seen.add(name);
+
+    const start = match.index ?? 0;
+    const end = index + 1 < matches.length ? (matches[index + 1].index ?? html.length) : html.length;
+    const sizeMatch = html.slice(start, end).match(/([0-9.]+)\s*(Bytes|KB|MB|GB)/);
+    assets.push({
+      name,
+      browser_download_url: `https://github.com${href}`,
+      size: sizeMatch ? sizeToBytes(sizeMatch[1], sizeMatch[2]) : undefined,
+    });
+  });
+
+  return assets;
+}
+
+async function fromAtomFeed(): Promise<ReleaseInfo | null> {
+  const feed = await fetch(`${REPO_URL}/releases.atom`, {
+    headers: { "User-Agent": "acuye-pass-site" },
+    next: { revalidate: 600 },
+  });
+  if (!feed.ok) return null;
+  const xml = await feed.text();
+  const entry = xml.match(/<entry>([\s\S]*?)<\/entry>/)?.[1];
+  if (!entry) return null;
+
+  const link = entry.match(/href="([^"]*\/releases\/tag\/([^"/]+))"/);
+  if (!link) return null;
+  const tag = link[2];
+  const version = tag.replace(/^v/i, "");
+  if (!/^v?\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$/.test(tag)) return null;
+
+  const updated = entry.match(/<updated>([^<]+)<\/updated>/)?.[1] ?? null;
+  const content = entry.match(/<content[^>]*>([\s\S]*?)<\/content>/)?.[1] ?? "";
+
+  const assetsPage = await fetch(`${REPO_URL}/releases/expanded_assets/${tag}`, {
+    headers: { "User-Agent": "acuye-pass-site" },
+    next: { revalidate: 600 },
+  });
+  const assets = assetsPage.ok ? parseAssetRows(await assetsPage.text(), tag) : [];
+
+  const draft: GithubRelease = {
+    tag_name: tag,
+    name: `Acuye Pass ${version}`,
+    body: decodeEntities(content),
+    prerelease: version.includes("-"),
+    draft: false,
+    published_at: updated,
+    html_url: `https://github.com${link[1]}`,
+    assets,
+  };
+  return toReleaseInfo(draft, "feed");
+}
+
 export async function getLatestRelease(): Promise<ReleaseInfo> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
@@ -179,12 +270,18 @@ export async function getLatestRelease(): Promise<ReleaseInfo> {
       headers,
       next: { revalidate: 600 },
     });
-    if (!response.ok) return fallbackRelease();
+    if (!response.ok) throw new Error(`release API returned ${response.status}`);
     const releases = (await response.json()) as GithubRelease[];
     const latest = releases.find((release) => !release.draft);
-    if (!latest) return fallbackRelease();
-    return toReleaseInfo(latest, true);
+    if (!latest) throw new Error("no published release");
+    return toReleaseInfo(latest, "api");
   } catch {
-    return fallbackRelease();
+    // Rate limits and outages: the release pages are not rate limited, so read
+    // the same artifacts from there before giving up on live data entirely.
+    try {
+      return (await fromAtomFeed()) ?? fallbackRelease();
+    } catch {
+      return fallbackRelease();
+    }
   }
 }

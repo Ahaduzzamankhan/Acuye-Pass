@@ -381,7 +381,9 @@ export default async function Page() {
           <div className="footer__bottom">
             <span>MIT © 2026 Fluxenite</span>
             <span>
-              {release.live ? `release data: GitHub API · v${release.version}` : "release data: cached fallback"}
+              {release.source === "none"
+                ? "release data: cached fallback"
+                : `release data: GitHub ${release.source === "api" ? "API" : "release page"} · v${release.version}`}
             </span>
           </div>
         </div>

@@ -143,9 +143,11 @@ export function Downloads({ release: initial }: { release: ReleaseInfo }) {
 
       <div className="stale">
         <span className="dot" aria-hidden="true" />
-        {release.live
+        {release.source === "api"
           ? `Live from the GitHub releases API${checkedAt ? ` · checked ${checkedAt} UTC` : ""}`
-          : "Live build data is unavailable right now, so the buttons open the release page instead"}
+          : release.source === "feed"
+            ? `Read from the release page${checkedAt ? ` · checked ${checkedAt} UTC` : ""} — the API was rate limited, so sizes may be rounded`
+            : "Live build data is unavailable right now, so the buttons open the release page instead"}
       </div>
 
       <details className="notes">
